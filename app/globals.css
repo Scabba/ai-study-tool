@@ -24,3 +24,72 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* The Generate button: blue, white dots show up on it while loading */
+.generate-btn {
+  margin-top: 12px;
+  padding: 10px 24px;
+  min-width: 190px;       /* keeps the width steady when text becomes dots */
+  height: 44px;
+  background: #2563eb;    /* blue */
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.generate-btn:disabled {
+  cursor: default;        /* no clicking while it's loading */
+}
+
+/* The Submit button: green with bold white text. After submit it shows the grade. */
+.submit-btn {
+  margin-top: 8px;
+  padding: 12px 28px;
+  background: #16a34a;    /* green */
+  color: white;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.submit-btn:disabled {
+  cursor: default;        /* once submitted, it's just showing the grade */
+}
+
+/* Loading animation: three dots that bounce in sequence */
+.loading-dots {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.loading-dots span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;       /* makes the square a circle */
+  background: white;        /* the dot colour */
+  animation: dot-bounce 1s infinite ease-in-out;
+}
+
+/* Make each dot start a little after the one before it */
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0);     opacity: 0.4; }
+  40%           { transform: translateY(-8px);  opacity: 1;   }
+}
+
+/* Flash an unanswered question dim yellow (#eab308 = the radio colour) for 1s */
+.flash-missing {
+  animation: flash-yellow 1s ease;
+}
+
+@keyframes flash-yellow {
+  0%, 100% { background-color: transparent; }
+  50%      { background-color: rgba(234, 179, 8, 0.35); } /* dim yellow */
+}
