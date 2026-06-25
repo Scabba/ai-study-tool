@@ -1,17 +1,33 @@
-import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function POST(req: Request) {
-  const body = await req.json();
-  const text = body.text;
+type Q = {
+  question: string;
+  options: { A: string; B: string; C: string; D: string };
+  answer: string;
+  difficulty: string;
+};
+
+const order: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
+
+// Ask the model for `count` questions, telling it to avoid repeating any we already have
+async function makeQuestions(
+  text: string,
+  count: number,
+  avoid: string[]
+): Promise<Q[]> {
+  const avoidNote = avoid.length
+    ? `\n\nDo NOT repeat or rephrase any of these existing questions:\n- ${avoid.join(
+        "\n- "
+      )}`
+    : "";
 
   const response = await client.chat.completions.create({
     model: "gpt-4o-mini",
-    response_format: { type: "json_object" }, // force the model to reply with valid JSON
+    response_format: { type: "json_object" }, // force valid JSON
     messages: [
       {
         role: "system",
@@ -21,15 +37,14 @@ export async function POST(req: Request) {
       },
       {
         role: "user",
-        content: `Create exactly 5 multiple-choice questions based on the notes below.
+        content: `Create exactly ${count} multiple-choice questions based on the notes below.
 
 Rules:
-- Question 1 must be EASY.
-- Questions 2 and 3 must be MEDIUM difficulty.
-- Questions 4 and 5 must be HARD.
+- The "questions" array MUST contain exactly ${count} items — no more, no fewer.
 - Each question has exactly 4 answer options labelled A, B, C, and D.
 - Exactly one option is correct.
-- Spread the correct answers EVENLY across A, B, C and D. Do NOT make most answers B or C. Across the 5 questions, make sure every letter (A, B, C, D) is used as the correct answer at least once.
+- Use a mix of easy, medium, and hard, and label each one.
+- Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${avoidNote}
 
 Return JSON in exactly this shape:
 {
@@ -46,13 +61,76 @@ Return JSON in exactly this shape:
 Notes:
 ${text}`
       }
-    ],
+    ]
   });
 
   const output = response.choices[0].message.content ?? "{}";
   const parsed = JSON.parse(output);
+  return Array.isArray(parsed.questions) ? parsed.questions : [];
+}
 
-  return NextResponse.json({
-    questions: parsed.questions ?? []
+export async function POST(req: Request) {
+  const body = await req.json();
+  const text = body.text;
+
+  // Only allow 5/10/15/20, default to 5
+  const allowed = [5, 10, 15, 20];
+  const count = allowed.includes(body.count) ? body.count : 5;
+
+  // Split the total into chunks of 5 (e.g. 20 -> [5, 5, 5, 5])
+  const chunks: number[] = [];
+  for (let left = count; left > 0; left -= 5) {
+    chunks.push(Math.min(5, left));
+  }
+
+  const encoder = new TextEncoder();
+
+  // Stream questions out one JSON line at a time, as soon as each is ready
+  const stream = new ReadableStream({
+    async start(controller) {
+      const seen = new Set<string>();
+      const sentTexts: string[] = [];
+      let sent = 0;
+
+      // Send one question down the stream (skipping duplicates / extras)
+      const send = (q: Q) => {
+        const key = q.question?.trim().toLowerCase();
+        if (!key || seen.has(key) || sent >= count) return;
+        seen.add(key);
+        sentTexts.push(q.question);
+        sent++;
+        controller.enqueue(encoder.encode(JSON.stringify(q) + "\n"));
+      };
+
+      // Fire all chunks in parallel; emit each chunk's questions the moment it lands
+      await Promise.all(
+        chunks.map(async (n) => {
+          const batch = await makeQuestions(text, n, []);
+          batch.sort(
+            (a, b) =>
+              (order[a.difficulty?.toLowerCase()] ?? 1) -
+              (order[b.difficulty?.toLowerCase()] ?? 1)
+          );
+          for (const q of batch) send(q);
+        })
+      );
+
+      // If duplicates left us short, top up the remainder
+      let attempts = 0;
+      while (sent < count && attempts < 3) {
+        const batch = await makeQuestions(text, count - sent, sentTexts);
+        for (const q of batch) send(q);
+        attempts++;
+      }
+
+      controller.close();
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform"
+    }
   });
 }
