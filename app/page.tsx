@@ -11,6 +11,16 @@ type Question = {
   difficulty: string;
 };
 
+// Difficulty slider stops (index 0 -> 2)
+const DIFFICULTIES = ["Middle School", "High School", "University"];
+
+// Grade/Year choices for each difficulty (same index order as DIFFICULTIES)
+const GRADE_OPTIONS = [
+  ["5", "6", "7", "8"],              // Middle School
+  ["9", "10", "11", "12"],           // High School
+  ["1", "2", "3", "4", "Graduate"]   // University
+];
+
 export default function Home() {
   const [text, setText] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -18,13 +28,20 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false); // has the user pressed Submit?
   const [instantFeedback, setInstantFeedback] = useState(false); // reveal right/wrong as you answer
+  const [toggleError, setToggleError] = useState<string | null>(null); // shown if you try to change instant feedback mid-quiz
+  const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
   const [amount, setAmount] = useState(5); // how many questions to generate
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
+  const [showSettings, setShowSettings] = useState(false); // the cog settings panel
+  const [difficulty, setDifficulty] = useState(1); // 0=Middle School, 1=High School, 2=University
+  const [gradeYear, setGradeYear] = useState<string | null>(null); // chosen grade/year within the difficulty
   const [dotCount, setDotCount] = useState(3); // for the animated "paste text here..." dots
   const [flashIndex, setFlashIndex] = useState<number | null>(null); // which question to flash as "missing"
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden PDF file picker
   const noticeRef = useRef<HTMLDivElement>(null); // the pre-release notice box
   const noticeButtonRef = useRef<HTMLButtonElement>(null); // the "?" button
+  const settingsRef = useRef<HTMLDivElement>(null); // the settings panel
+  const settingsButtonRef = useRef<HTMLButtonElement>(null); // the cog button
 
   // Close the notice when you click anywhere outside it (or its button)
   useEffect(() => {
@@ -42,6 +59,23 @@ export default function Home() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showNotice]);
+
+  // Close the settings panel when you click anywhere outside it (or the cog)
+  useEffect(() => {
+    if (!showSettings) return;
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        settingsRef.current?.contains(target) ||
+        settingsButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setShowSettings(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showSettings]);
 
   // Animate the placeholder dots (1 -> 2 -> 3 -> 1 ...) while the box is empty
   useEffect(() => {
@@ -63,14 +97,18 @@ export default function Home() {
       const el = document.getElementById(`question-${missing}`);
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
 
-      // ...and flash it yellow for one second
+      // ...and flash it yellow for three seconds
       setFlashIndex(missing);
-      setTimeout(() => setFlashIndex(null), 1000);
+      setTimeout(() => setFlashIndex(null), 3000);
       return; // stop here — don't grade an incomplete quiz
     }
 
-    setSubmitted(true); // everything answered -> grade it
+    setSubmitted(true);   // everything answered -> grade it
+    setToggleError(null); // toggle is usable again now that it's submitted
   }
+
+  // Once at least one answer is picked, the instant-feedback toggle is locked
+  const hasAnswered = Object.keys(answers).length > 0;
 
   // How many did they get right, and that as a percentage
   const score = questions.reduce(
@@ -81,19 +119,38 @@ export default function Home() {
     ? Math.round((score / questions.length) * 100)
     : 0;
 
+  // Turn the difficulty + grade settings into a phrase the AI can target,
+  // e.g. "grade 8 (middle school)" or "graduate-level (university)"
+  function describeLevel(): string {
+    const school = DIFFICULTIES[difficulty];
+    if (!gradeYear) return school; // no grade picked yet -> just the school level
+    if (difficulty === 2) {
+      return gradeYear === "Graduate"
+        ? "graduate-level (university)"
+        : `year ${gradeYear} university`;
+    }
+    return `grade ${gradeYear} (${school.toLowerCase()})`;
+  }
+
   // Generate from whatever text we pass in (defaults to the textarea's text)
   async function generateQuestions(sourceText: string = text) {
+    if (!gradeYear) {
+      setGenError("Choose grade level in settings to generate questions (top left)");
+      return;
+    }
+    setGenError(null);
     setLoading(true);    // turn the dots ON before we start
     setQuestions([]);    // clear the old quiz right away
     setAnswers({});      // clear any previous selections
     setSubmitted(false); // back to "not submitted yet"
+    setToggleError(null); // fresh quiz -> toggle is usable again
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ text: sourceText, count: amount })
+        body: JSON.stringify({ text: sourceText, count: amount, level: describeLevel() })
       });
 
       if (!res.body) return;
@@ -135,6 +192,10 @@ export default function Home() {
 
   // Read a PDF in the browser, pull out its text, then generate questions
   async function handlePdf(file: File) {
+    if (!gradeYear) {
+      setGenError("Please choose grade level in settings to generate questions");
+      return;
+    }
     setLoading(true);
     try {
       const pdfjsLib = await import("pdfjs-dist");
@@ -216,6 +277,223 @@ export default function Home() {
         </div>
       )}
 
+      {/* Cog settings circle, fixed to the top-left of the screen */}
+      <button
+        ref={settingsButtonRef}
+        onClick={() => setShowSettings((v) => !v)}
+        title="Quiz settings"
+        style={{
+          position: "fixed",
+          top: 20,
+          left: 20,
+          width: 40,
+          height: 40,
+          borderRadius: "50%",
+          border: "2px solid #888",
+          background: "var(--background)",
+          color: "inherit",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          zIndex: 1000
+        }}
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+
+      {/* The settings panel that expands from the cog */}
+      {showSettings && (
+        <div
+          ref={settingsRef}
+          style={{
+            position: "fixed",
+            top: 70,
+            left: 20,
+            width: 300,
+            background: "var(--background)",
+            color: "var(--foreground)",
+            border: "1px solid #888",
+            borderRadius: 3,
+            padding: 20,
+            boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+            zIndex: 1000,
+            display: "flex",
+            flexDirection: "column",
+            gap: 20
+          }}
+        >
+          <div style={{ fontWeight: "bold", fontSize: 18 }}>Settings</div>
+
+          {/* Instant feedback on/off */}
+          <div>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+            >
+              {/* the real checkbox, hidden — the label still toggles it */}
+              <input
+                type="checkbox"
+                checked={instantFeedback}
+                onChange={(e) => {
+                  // Locked only DURING the quiz (answered but not yet submitted).
+                  // After submitting, answers are already locked, so it's free again.
+                  if (hasAnswered && !submitted) {
+                    setToggleError(
+                      e.target.checked
+                        ? "Cannot be enabled; Complete the questions"
+                        : "Cannot be disabled; Complete the questions"
+                    );
+                    return;
+                  }
+                  setInstantFeedback(e.target.checked);
+                  setToggleError(null);
+                }}
+                style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+              />
+              {/* our custom box with a white checkmark when on */}
+              <span
+                style={{
+                  width: 18,
+                  height: 18,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: instantFeedback ? "#1e40af" : "#000",
+                  border: "1px solid #999",
+                  borderRadius: 3
+                }}
+              >
+                {instantFeedback && (
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M5 12 l5 5 l9 -11" />
+                  </svg>
+                )}
+              </span>
+              Instant feedback
+            </label>
+            {toggleError && (
+              <div style={{ marginTop: 6, color: "#dc2626", fontSize: 14 }}>
+                {toggleError}
+              </div>
+            )}
+          </div>
+
+          {/* Question amount: pick one of 5 / 10 / 15 / 20 */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Questions</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[5, 10, 15, 20].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setAmount(n)}
+                  style={{
+                    width: 44,
+                    height: 36,
+                    borderRadius: 3,
+                    border: "2px solid #888",
+                    background: amount === n ? "#1e40af" : "transparent",
+                    color: amount === n ? "white" : "inherit",
+                    fontWeight: amount === n ? "bold" : "normal",
+                    cursor: "pointer"
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Difficulty slider: Middle School / High School / University */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Difficulty</div>
+            <input
+              className="difficulty-slider"
+              type="range"
+              min={0}
+              max={2}
+              step={1}
+              value={difficulty}
+              onChange={(e) => {
+                setDifficulty(Number(e.target.value));
+                setGradeYear(null); // grade options change with the level, so reset the pick
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginTop: 4
+              }}
+            >
+              {DIFFICULTIES.map((label, idx) => (
+                <span
+                  key={label}
+                  style={{
+                    fontWeight: difficulty === idx ? "bold" : "normal",
+                    opacity: difficulty === idx ? 1 : 0.6
+                  }}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Grade/Year: choices depend on the difficulty level above */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>
+              {difficulty === 2 ? "Year" : "Grade"}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {GRADE_OPTIONS[difficulty].map((g) => (
+                <button
+                  key={g}
+                  onClick={() => {
+                    setGradeYear(g);
+                    setGenError(null); // grade chosen -> clear the warning
+                  }}
+                  style={{
+                    minWidth: 40,
+                    height: 36,
+                    padding: "0 10px",
+                    borderRadius: 3,
+                    border: "2px solid #888",
+                    background: gradeYear === g ? "#1e40af" : "transparent",
+                    color: gradeYear === g ? "white" : "inherit",
+                    fontWeight: gradeYear === g ? "bold" : "normal",
+                    cursor: "pointer"
+                  }}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <h1
         style={{ textAlign: "center", fontWeight: "bold", fontSize: 64 }}
       >
@@ -288,82 +566,6 @@ export default function Home() {
 
       <br />
 
-      {/* Settings row: instant feedback toggle + how many questions */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 24,
-          marginTop: 12,
-          flexWrap: "wrap"
-        }}
-      >
-        {/* Instant feedback on/off */}
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
-        >
-          {/* the real checkbox, hidden — the label still toggles it */}
-          <input
-            type="checkbox"
-            checked={instantFeedback}
-            onChange={(e) => setInstantFeedback(e.target.checked)}
-            style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
-          />
-          {/* our custom box with a white checkmark when on */}
-          <span
-            style={{
-              width: 18,
-              height: 18,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: instantFeedback ? "#1e40af" : "#000", // black when empty
-              border: "1px solid #999",    // light grey outline
-              borderRadius: 3
-            }}
-          >
-            {instantFeedback && (
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="white"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M5 12 l5 5 l9 -11" />
-              </svg>
-            )}
-          </span>
-          Instant feedback
-        </label>
-
-        {/* Question amount: pick one of 5 / 10 / 15 / 20 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span>Questions:</span>
-          {[5, 10, 15, 20].map((n) => (
-            <button
-              key={n}
-              onClick={() => setAmount(n)}
-              style={{
-                width: 44,
-                height: 36,
-                borderRadius: 3,
-                border: "2px solid #888",
-                background: amount === n ? "#1e40af" : "transparent",
-                color: amount === n ? "white" : "inherit",
-                fontWeight: amount === n ? "bold" : "normal",
-                cursor: "pointer"
-              }}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <button
         onClick={() => generateQuestions()}
         disabled={loading}
@@ -387,9 +589,16 @@ export default function Home() {
             <span></span>
           </span>
         ) : (
-          "Generate Questions"
+          "Generate"
         )}
       </button>
+
+      {/* Warning shown if you try to generate without picking a grade */}
+      {genError && (
+        <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
+          {genError}
+        </div>
+      )}
 
       <div style={{ marginTop: 32 }}>
         {questions.map((q, i) => {
@@ -410,9 +619,16 @@ export default function Home() {
               key={i}
               id={`question-${i}`}
               className={`q-card${flashIndex === i ? " flash-missing" : ""}`}
-              style={{ marginBottom: 40, padding: 12, borderRadius: 3 }}
+              style={{ marginBottom: 18, padding: 12, borderRadius: 3 }}
             >
-              <p style={{ fontWeight: "bold", fontSize: 18, color: titleColor }}>
+              <p
+                style={{
+                  fontWeight: "bold",
+                  fontSize: 18,
+                  color: titleColor,
+                  marginBottom: 22 // push the answers down, away from the question
+                }}
+              >
                 {i + 1}. {q.question}
               </p>
 

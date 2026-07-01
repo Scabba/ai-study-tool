@@ -100,12 +100,40 @@ body {
 .q-card > *:nth-child(4) { animation-delay: 420ms; }
 .q-card > *:nth-child(5) { animation-delay: 560ms; }
 
-/* Flash an unanswered question dim yellow (#eab308 = the radio colour) for 1s */
+/* Flash an unanswered question dim yellow (#eab308 = the radio colour) for 3s */
 .flash-missing {
-  animation: flash-yellow 1s ease;
+  animation: flash-yellow 3s ease;
 }
 
 @keyframes flash-yellow {
   0%, 100% { background-color: transparent; }
   50%      { background-color: rgba(234, 179, 8, 0.35); } /* dim yellow */
+}
+
+/* Difficulty slider: a squared-off (slightly rounded) thumb, matching the site */
+.difficulty-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #888;
+  cursor: pointer;
+}
+.difficulty-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;       /* square with slightly rounded edges */
+  background: #1e40af;
+  cursor: pointer;
+}
+.difficulty-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: #1e40af;
+  border: none;
+  cursor: pointer;
 }
