@@ -62,8 +62,8 @@ async function makeQuestions(
 
 Rules:
 - The "questions" array MUST contain exactly ${count} items — no more, no fewer.
-- Each question has exactly 4 answer options labelled A, B, C, and D.
-- Exactly one option is correct.
+- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
+- Exactly one option is correct, and no other option may be equal or equivalent to it.
 - Draw questions from ACROSS all of the notes (beginning, middle, and end) — never only the opening.
 - Use a mix of easy, medium, and hard, and label each one.
 - Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${levelNote}${avoidNote}
@@ -128,8 +128,8 @@ async function makeQuestionsPerSection(
 Rules:
 - The "questions" array MUST contain exactly ${count} items: exactly ONE question per section (question 1 from [Section 1], question 2 from [Section 2], and so on). This ensures the whole document is covered, not just the beginning.
 - The sections are ONLY there to spread coverage. NEVER mention "section", a section number, or that the notes were divided. Each question must read as a standalone question about the material — the student never sees the sections.
-- Each question has exactly 4 answer options labelled A, B, C, and D.
-- Exactly one option is correct.
+- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
+- Exactly one option is correct, and no other option may be equal or equivalent to it.
 - Use a mix of easy, medium, and hard, and label each one.
 - Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${levelNote}${avoidNote}
 
@@ -156,9 +156,105 @@ ${notesBlock}`
   return Array.isArray(parsed.questions) ? parsed.questions : [];
 }
 
+// Make questions by having the AI read one or more uploaded images.
+// When generating for one image out of several, pass imageNumber/totalImages
+// so each question can say which uploaded image it is about.
+async function makeQuestionsFromImages(
+  images: string[],
+  count: number,
+  avoid: string[],
+  level: string,
+  imageNumber?: number,
+  totalImages?: number
+): Promise<Q[]> {
+  const avoidNote = avoid.length
+    ? `\n\nDo NOT repeat or rephrase any of these existing questions:\n- ${avoid.join(
+        "\n- "
+      )}`
+    : "";
+  const levelNote = level
+    ? `\n- Write the questions for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
+    : "";
+  // When there are several uploaded images, tell the student which one each question is about
+  const labelNote =
+    totalImages && totalImages > 1 && imageNumber
+      ? `\n- The student uploaded ${totalImages} images. Begin EVERY question with the exact phrase "In image ${imageNumber}, " so they know which uploaded photo it refers to.`
+      : "";
+  const many = images.length > 1;
+
+  const prompt = `Create exactly ${count} multiple-choice study questions based on the attached image${
+    many ? `s (there are ${images.length})` : ""
+  }.
+
+The image${many ? "s" : ""} could be handwritten or typed notes, a textbook page, a diagram, a chart, or a photo of an object, place, or scene. Look carefully at what ${
+    many ? "they show" : "it shows"
+  } and write educational quiz questions about the subject matter — the facts, concepts, objects, or ideas depicted.
+
+Rules:
+- The "questions" array MUST contain exactly ${count} items. ALWAYS produce them, no matter how simple the image${
+    many ? "s are" : " is"
+  } — even a single shape, colour, or object is enough (ask about its colour, shape, count, position, or what it is). Never return an empty list.${
+    many
+      ? "\n- Draw questions from across ALL of the images, not just the first one."
+      : ""
+  }
+- Base the questions on what is actually shown; don't invent unrelated facts.
+- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
+- Exactly one option is correct, and no other option may be equal or equivalent to it.
+- Use a mix of easy, medium, and hard, and label each one.
+- Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${labelNote}${levelNote}${avoidNote}
+
+Return JSON in exactly this shape:
+{
+  "questions": [
+    {
+      "question": "the question text",
+      "options": { "A": "...", "B": "...", "C": "...", "D": "..." },
+      "answer": "A",
+      "difficulty": "easy"
+    }
+  ]
+}`;
+
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    { type: "text", text: prompt },
+    ...images.map(
+      (img) => ({ type: "image_url", image_url: { url: img } }) as const
+    )
+  ];
+
+  const response = await client.chat.completions.create({
+    model: "gpt-4o-mini",
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "You generate multiple-choice study questions from notes. " +
+          "You always respond with valid JSON only, no extra text."
+      },
+      { role: "user", content }
+    ]
+  });
+
+  const output = response.choices[0].message.content ?? "{}";
+  const parsed = JSON.parse(output);
+  return Array.isArray(parsed.questions) ? parsed.questions : [];
+}
+
 export async function POST(req: Request) {
   const body = await req.json();
-  const text = body.text;
+  const text = typeof body.text === "string" ? body.text : "";
+  // Accept an array of images (or a single legacy "image")
+  const images: string[] = (
+    Array.isArray(body.images)
+      ? body.images.filter(
+          (x: unknown) => typeof x === "string" && x.startsWith("data:image/")
+        )
+      : typeof body.image === "string" && body.image.startsWith("data:image/")
+        ? [body.image]
+        : []
+  ).slice(0, 10); // never process more than 10 images
   const level = typeof body.level === "string" ? body.level : "";
 
   // Only allow 5/10/15/20, default to 5
@@ -182,6 +278,15 @@ export async function POST(req: Request) {
       const send = (q: Q) => {
         const key = q.question?.trim().toLowerCase();
         if (!key || seen.has(key) || sent >= count) return;
+
+        // Drop malformed questions: the 4 options must be distinct & non-empty,
+        // and the answer must point at one of A/B/C/D
+        const opts = [q.options?.A, q.options?.B, q.options?.C, q.options?.D].map(
+          (o) => (o ?? "").trim().toLowerCase()
+        );
+        if (opts.some((o) => !o) || new Set(opts).size !== 4) return;
+        if (!["A", "B", "C", "D"].includes(q.answer)) return;
+
         seen.add(key);
         sentTexts.push(q.question);
         sent++;
@@ -195,40 +300,93 @@ export async function POST(req: Request) {
             (order[b.difficulty?.toLowerCase()] ?? 1)
         );
 
-      if (sections.length === count) {
-        // Long enough to split: one question per section. Batch the sections
-        // into groups of 5 and run those groups in parallel.
-        const groups: string[][] = [];
-        for (let i = 0; i < sections.length; i += 5) {
-          groups.push(sections.slice(i, i + 5));
-        }
-        await Promise.all(
-          groups.map(async (group) => {
-            const batch = await makeQuestionsPerSection(group, [], level);
-            sortByDifficulty(batch);
-            for (const q of batch) send(q);
-          })
-        );
-      } else {
-        // Too short to split — ask for the whole count from the whole text,
-        // in parallel chunks of 5
-        const chunks: number[] = [];
-        for (let left = count; left > 0; left -= 5) chunks.push(Math.min(5, left));
-        await Promise.all(
-          chunks.map(async (n) => {
-            const batch = await makeQuestions(text, n, [], level);
-            sortByDifficulty(batch);
-            for (const q of batch) send(q);
-          })
-        );
-      }
+      if (images.length > 0) {
+        // Spread the questions across the images as evenly as possible:
+        //  - fewer questions than images -> use that many images, 1 question each
+        //  - equal              -> 1 question per image
+        //  - more questions     -> each image gets an equal share (leftovers +1)
+        const n = images.length;
+        const base = Math.floor(count / n);
+        const remainder = count % n;
 
-      // If duplicates left us short, top up the remainder
-      let attempts = 0;
-      while (sent < count && attempts < 3) {
-        const batch = await makeQuestions(text, count - sent, sentTexts, level);
-        for (const q of batch) send(q);
-        attempts++;
+        await Promise.all(
+          images.map(async (img, i) => {
+            const perImage = base + (i < remainder ? 1 : 0);
+            if (perImage <= 0) return; // this image isn't used for this quiz
+            const batch = await makeQuestionsFromImages(
+              [img],
+              perImage,
+              [],
+              level,
+              i + 1, // this image's number (1-based)
+              n // total images uploaded
+            );
+            sortByDifficulty(batch);
+            for (const q of batch) send(q);
+          })
+        );
+
+        // Top up any shortfall
+        let attempts = 0;
+        while (sent < count && attempts < 3) {
+          const batch = await makeQuestionsFromImages(
+            images,
+            count - sent,
+            sentTexts,
+            level
+          );
+          if (batch.length === 0 && sent === 0) break; // unreadable image — stop retrying
+          for (const q of batch) send(q);
+          attempts++;
+        }
+
+        // Nothing usable in the image -> tell the user instead of a blank page
+        if (sent === 0) {
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                error:
+                  "We couldn't identify anything in that image. Try a clearer picture."
+              }) + "\n"
+            )
+          );
+        }
+      } else {
+        // TEXT
+        if (sections.length === count) {
+          // Long enough to split: one question per section. Batch the sections
+          // into groups of 5 and run those groups in parallel.
+          const groups: string[][] = [];
+          for (let i = 0; i < sections.length; i += 5) {
+            groups.push(sections.slice(i, i + 5));
+          }
+          await Promise.all(
+            groups.map(async (group) => {
+              const batch = await makeQuestionsPerSection(group, [], level);
+              sortByDifficulty(batch);
+              for (const q of batch) send(q);
+            })
+          );
+        } else {
+          // Too short to split — ask for the whole count from the whole text
+          const chunks: number[] = [];
+          for (let left = count; left > 0; left -= 5) chunks.push(Math.min(5, left));
+          await Promise.all(
+            chunks.map(async (n) => {
+              const batch = await makeQuestions(text, n, [], level);
+              sortByDifficulty(batch);
+              for (const q of batch) send(q);
+            })
+          );
+        }
+
+        // If duplicates left us short, top up the remainder
+        let attempts = 0;
+        while (sent < count && attempts < 3) {
+          const batch = await makeQuestions(text, count - sent, sentTexts, level);
+          for (const q of batch) send(q);
+          attempts++;
+        }
       }
 
       controller.close();

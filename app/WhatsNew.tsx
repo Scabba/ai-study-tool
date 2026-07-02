@@ -4,14 +4,14 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.2";
+const APP_VERSION = "0.3";
 
 const WHATS_NEW = [
-  "✅ Optional instant feedback for your answers",
-  "🔢 Setting to change amount of questions to generate",
-  "👀 This 'What's New' popup so you're aware of new awesome updates",
-  "❤️ Slightly refined UI",
-  "🙂 Faster quiz generation"
+  "💥 An all-new page for generating questions through images",
+  "🆘 A support page",
+  "◀️ An update history page to stay updated on all of the latest features",
+  "🔢 Difficulty Setting",
+  "🪲 Several Bugfixes and UI Improvements"
 ];
 
 export default function WhatsNew() {

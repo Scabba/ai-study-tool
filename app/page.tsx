@@ -11,6 +11,9 @@ type Question = {
   difficulty: string;
 };
 
+// Most photos you can upload at once
+const MAX_IMAGES = 10;
+
 // Difficulty slider stops (index 0 -> 2)
 const DIFFICULTIES = ["Middle School", "High School", "University"];
 
@@ -23,6 +26,9 @@ const GRADE_OPTIONS = [
 
 export default function Home() {
   const [text, setText] = useState("");
+  const [mode, setMode] = useState<"text" | "image">("text"); // which page tab is active
+  const [images, setImages] = useState<string[]>([]); // uploaded images on the image page
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<number, string>>({}); // which letter the user picked per question
   const [loading, setLoading] = useState(false);
@@ -38,10 +44,12 @@ export default function Home() {
   const [dotCount, setDotCount] = useState(3); // for the animated "paste text here..." dots
   const [flashIndex, setFlashIndex] = useState<number | null>(null); // which question to flash as "missing"
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden PDF file picker
+  const imageInputRef = useRef<HTMLInputElement>(null); // hidden image file picker
   const noticeRef = useRef<HTMLDivElement>(null); // the pre-release notice box
   const noticeButtonRef = useRef<HTMLButtonElement>(null); // the "?" button
   const settingsRef = useRef<HTMLDivElement>(null); // the settings panel
   const settingsButtonRef = useRef<HTMLButtonElement>(null); // the cog button
+  const skipFirstSave = useRef(true); // don't save settings on the very first render
 
   // Close the notice when you click anywhere outside it (or its button)
   useEffect(() => {
@@ -85,6 +93,38 @@ export default function Home() {
     }, 400);
     return () => clearInterval(id); // stop the timer when we're done
   }, [text]);
+
+  // Load the user's saved settings once, on first load
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("edforceSettings");
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (typeof s.difficulty === "number") setDifficulty(s.difficulty);
+      if (s.gradeYear === null || typeof s.gradeYear === "string") setGradeYear(s.gradeYear);
+      if (typeof s.instantFeedback === "boolean") setInstantFeedback(s.instantFeedback);
+      if (typeof s.amount === "number") setAmount(s.amount);
+    } catch {
+      // ignore bad/missing saved data
+    }
+  }, []);
+
+  // Save settings whenever they change (skipping the first render, which runs
+  // before the saved values have loaded — so we don't overwrite them)
+  useEffect(() => {
+    if (skipFirstSave.current) {
+      skipFirstSave.current = false;
+      return;
+    }
+    try {
+      localStorage.setItem(
+        "edforceSettings",
+        JSON.stringify({ difficulty, gradeYear, instantFeedback, amount })
+      );
+    } catch {
+      // storage might be unavailable — not critical
+    }
+  }, [difficulty, gradeYear, instantFeedback, amount]);
 
   const placeholder = "paste text here" + ".".repeat(dotCount);
 
@@ -132,8 +172,8 @@ export default function Home() {
     return `grade ${gradeYear} (${school.toLowerCase()})`;
   }
 
-  // Generate from whatever text we pass in (defaults to the textarea's text)
-  async function generateQuestions(sourceText: string = text) {
+  // Core generation: send a payload (text OR image) and stream questions in
+  async function runGeneration(payload: { text?: string; images?: string[] }) {
     if (!gradeYear) {
       setGenError("Choose grade level in settings to generate questions (top left)");
       return;
@@ -150,21 +190,25 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ text: sourceText, count: amount, level: describeLevel() })
+        body: JSON.stringify({ ...payload, count: amount, level: describeLevel() })
       });
 
       if (!res.body) return;
 
-      // The server sends one question per line, as each is ready. Read them
-      // as they stream in and add each to the screen one at a time.
+      // The server sends one JSON line per question as each is ready (or an
+      // {error} line if something went wrong). Read them as they stream in.
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
-      // Add a single question, then pause briefly so the next one pops up on its own
-      const addOne = async (q: Question) => {
-        setQuestions((prev) => [...prev, q]);
-        await new Promise((r) => setTimeout(r, 250)); // gap between questions so each animates in on its own
+      const handleLine = async (line: string) => {
+        const item = JSON.parse(line);
+        if (item.error) {
+          setGenError(item.error); // the server told us what went wrong
+          return;
+        }
+        setQuestions((prev) => [...prev, item as Question]);
+        await new Promise((r) => setTimeout(r, 250)); // gap so each pops up on its own
       };
 
       while (true) {
@@ -176,18 +220,82 @@ export default function Home() {
         buffer = lines.pop() ?? ""; // the last piece might be a half-finished line
 
         for (const line of lines) {
-          if (!line.trim()) continue;
-          await addOne(JSON.parse(line) as Question);
+          if (line.trim()) await handleLine(line);
         }
       }
 
-      // handle any leftover line after the stream ends
-      if (buffer.trim()) {
-        await addOne(JSON.parse(buffer) as Question);
-      }
+      if (buffer.trim()) await handleLine(buffer);
     } finally {
       setLoading(false); // turn the dots OFF when done (even if it failed)
     }
+  }
+
+  // Generate from whatever text we pass in (defaults to the textarea's text)
+  async function generateQuestions(sourceText: string = text) {
+    if (!sourceText.trim()) {
+      setGenError("Please paste some notes first");
+      return;
+    }
+    await runGeneration({ text: sourceText });
+  }
+
+  // Add one or more uploaded images to the list (doesn't generate yet)
+  async function addImages(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    if (Array.from(files).some((f) => f.size > 10 * 1024 * 1024)) {
+      setGenError("Each image must be under 10 MB.");
+      return;
+    }
+    setGenError(null);
+    try {
+      const dataUrls = await Promise.all(
+        Array.from(files).map(
+          (file) =>
+            new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => reject(reader.error);
+              reader.readAsDataURL(file);
+            })
+        )
+      );
+      // Skip duplicates, and cap the total at MAX_IMAGES
+      const newOnes = dataUrls.filter((url) => !images.includes(url));
+      const room = MAX_IMAGES - images.length;
+      if (room <= 0) {
+        setGenError(`You can only upload up to ${MAX_IMAGES} images.`);
+        return;
+      }
+      if (newOnes.length > room) {
+        setGenError(`You can only upload up to ${MAX_IMAGES} images.`);
+      }
+      setImages([...images, ...newOnes.slice(0, room)]);
+    } catch {
+      setGenError("Couldn't read one of those images. Try different files.");
+    }
+  }
+
+  // Generate a quiz from all the uploaded images
+  async function generateFromImages() {
+    if (images.length === 0) {
+      setGenError("Please upload at least one photo first");
+      return;
+    }
+    await runGeneration({ images });
+  }
+
+  // Switch between the Text and Image tabs — each is its own fresh page,
+  // so clear the current quiz and any messages when you switch
+  function switchMode(m: "text" | "image") {
+    if (m === mode) return;
+    setMode(m);
+    setQuestions([]);
+    setAnswers({});
+    setSubmitted(false);
+    setGenError(null);
+    setToggleError(null);
+    setImages([]);
+    setFullscreenImage(null);
   }
 
   // Read a PDF in the browser, pull out its text, then generate questions
@@ -229,6 +337,31 @@ export default function Home() {
   return (
     <main style={{ padding: 40 }}>
       <WhatsNew />
+
+      {/* Fullscreen image viewer — click anywhere to close */}
+      {fullscreenImage && (
+        <div
+          onClick={() => setFullscreenImage(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20,
+            cursor: "zoom-out"
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={fullscreenImage}
+            alt="Fullscreen"
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+          />
+        </div>
+      )}
 
       {/* "?" help circle, fixed to the top-right of the screen */}
       <button
@@ -495,11 +628,52 @@ export default function Home() {
       )}
 
       <h1
-        style={{ textAlign: "center", fontWeight: "bold", fontSize: 64 }}
+        style={{
+          textAlign: "center",
+          fontWeight: "bold",
+          fontSize: 64,
+          marginTop: 0,      // sit up near the top edge
+          marginBottom: 32   // matches the gap between the tabs and the image button
+        }}
       >
         EdForce
       </h1>
 
+      {/* Tab bar: fixed at the top-left, next to the settings cog */}
+      <div
+        style={{
+          position: "fixed",
+          top: 20,
+          left: 72, // just right of the 40px cog at left:20
+          display: "flex",
+          gap: 8,
+          zIndex: 1000
+        }}
+      >
+        {(["text", "image"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => switchMode(m)}
+            style={{
+              height: 40,
+              padding: "0 16px",
+              borderRadius: 3,
+              border: "2px solid #888",
+              background: mode === m ? "#1e40af" : "transparent",
+              color: mode === m ? "white" : "inherit",
+              fontWeight: mode === m ? "bold" : "normal",
+              fontSize: 16,
+              cursor: "pointer",
+              textTransform: "capitalize"
+            }}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {mode === "text" && (
+        <>
       {/* Hidden file picker — only accepts PDFs */}
       <input
         type="file"
@@ -597,6 +771,148 @@ export default function Home() {
       {genError && (
         <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
           {genError}
+        </div>
+      )}
+        </>
+      )}
+
+      {/* Image page: previews fill the left, upload controls stay centered */}
+      {mode === "image" && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginTop: 20 }}>
+          {/* Left column: uploaded image previews, tiled to fill the space */}
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "row",
+              flexWrap: "wrap",   // multiple per row on the same y-level
+              alignContent: "flex-start",
+              gap: 12
+            }}
+          >
+            {images.map((src, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={src}
+                alt={`Upload ${i + 1}`}
+                onClick={() => setFullscreenImage(src)}
+                style={{
+                  maxWidth: 160,
+                  maxHeight: 160,
+                  border: "2px solid #888",
+                  borderRadius: 3,
+                  objectFit: "contain",
+                  cursor: "pointer" // click to view fullscreen
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Center column: upload controls */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              marginTop: 48 // keep the upload box near the textarea's height
+            }}
+          >
+            {/* Hidden image picker (can select several at once) */}
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              ref={imageInputRef}
+              style={{ display: "none" }}
+              onChange={(e) => {
+                addImages(e.target.files);
+                e.target.value = ""; // reset so the same files can be picked again
+              }}
+            />
+
+            {/* Painting box with a plus — click to add photos */}
+            <button
+              onClick={() => imageInputRef.current?.click()}
+              disabled={loading}
+              title="Add photos"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 96,
+                height: 96,
+                background: "transparent",
+                border: "2px solid #888",
+                borderRadius: 3,
+                cursor: loading ? "default" : "pointer",
+                color: "inherit"
+              }}
+            >
+              <svg
+                width="52"
+                height="52"
+                viewBox="0 0 32 32"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {/* painting frame */}
+                <rect x="4" y="7" width="18" height="17" rx="2.5" />
+                {/* sun */}
+                <circle cx="9.5" cy="12.5" r="1.8" />
+                {/* mountains */}
+                <path d="M5 21 l4 -5 3 3 3 -4 6 7" />
+                {/* plus, floating just off the top-right corner */}
+                <line x1="27" y1="3.5" x2="27" y2="9.5" />
+                <line x1="24" y1="6.5" x2="30" y2="6.5" />
+              </svg>
+            </button>
+
+            <p style={{ opacity: 0.7, marginTop: 12 }}>
+              Upload photos to generate questions
+            </p>
+
+            {/* Generate button (uses all uploaded photos) */}
+            <button
+              onClick={() => generateFromImages()}
+              disabled={loading}
+              style={{
+                marginTop: 16,
+                padding: "10px 24px",
+                minWidth: 190,
+                height: 44,
+                background: "#1e40af",
+                color: "white",
+                border: "none",
+                borderRadius: 3,
+                fontSize: 16,
+                cursor: loading ? "default" : "pointer"
+              }}
+            >
+              {loading ? (
+                <span className="loading-dots">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              ) : (
+                "Generate"
+              )}
+            </button>
+
+            {genError && (
+              <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
+                {genError}
+              </div>
+            )}
+          </div>
+
+          {/* Right column: spacer to keep the controls centered */}
+          <div style={{ flex: 1 }} />
         </div>
       )}
 
