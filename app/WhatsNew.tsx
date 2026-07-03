@@ -22,6 +22,9 @@ export default function WhatsNew() {
     // We store which version the user last saw.
     const lastSeen = localStorage.getItem("whatsNewVersion");
     if (lastSeen !== APP_VERSION) {
+      // Loading from localStorage must happen in an effect (SSR-safe), so this
+      // one-time setState is intentional.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setOpen(true); // they haven't seen this version yet -> show it
     }
   }, []);

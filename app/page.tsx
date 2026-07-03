@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import WhatsNew from "./WhatsNew";
 
 // The shape of one multiple-choice question coming back from the server
@@ -100,10 +101,14 @@ export default function Home() {
       const raw = localStorage.getItem("edforceSettings");
       if (!raw) return;
       const s = JSON.parse(raw);
+      // Loading saved settings must happen in an effect (SSR-safe); these
+      // one-time setState calls are intentional.
+      /* eslint-disable react-hooks/set-state-in-effect */
       if (typeof s.difficulty === "number") setDifficulty(s.difficulty);
       if (s.gradeYear === null || typeof s.gradeYear === "string") setGradeYear(s.gradeYear);
       if (typeof s.instantFeedback === "boolean") setInstantFeedback(s.instantFeedback);
       if (typeof s.amount === "number") setAmount(s.amount);
+      /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
       // ignore bad/missing saved data
     }
@@ -298,37 +303,70 @@ export default function Home() {
     setFullscreenImage(null);
   }
 
-  // Read a PDF in the browser, pull out its text, then generate questions
-  async function handlePdf(file: File) {
+  // Pull the text out of a PDF in the browser
+  async function extractPdfText(file: File): Promise<string> {
+    const pdfjsLib = await import("pdfjs-dist");
+    // tell pdf.js where its background "worker" file is
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.min.mjs",
+      import.meta.url
+    ).toString();
+
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+
+    let fullText = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      fullText +=
+        content.items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(" ") + "\n";
+    }
+    return fullText;
+  }
+
+  // Read an uploaded document (PDF, Word .docx, or plain text) and make a quiz
+  async function handleFile(file: File) {
     if (!gradeYear) {
-      setGenError("Please choose grade level in settings to generate questions");
+      setGenError("Choose grade level in settings to generate questions (top left)");
       return;
     }
+    const name = file.name.toLowerCase();
     setLoading(true);
     try {
-      const pdfjsLib = await import("pdfjs-dist");
-      // tell pdf.js where its background "worker" file is
-      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url
-      ).toString();
+      let extracted = "";
 
-      const buffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-
-      // walk every page and collect its text
-      let fullText = "";
-      for (let p = 1; p <= pdf.numPages; p++) {
-        const page = await pdf.getPage(p);
-        const content = await page.getTextContent();
-        const pageText = content.items
-          .map((item) => ("str" in item ? item.str : ""))
-          .join(" ");
-        fullText += pageText + "\n";
+      if (file.type === "application/pdf" || name.endsWith(".pdf")) {
+        extracted = await extractPdfText(file);
+      } else if (name.endsWith(".docx")) {
+        const mammoth = await import("mammoth");
+        const arrayBuffer = await file.arrayBuffer();
+        extracted = (await mammoth.extractRawText({ arrayBuffer })).value;
+      } else if (
+        file.type.startsWith("text/") ||
+        /\.(txt|md|markdown|csv|text|log)$/.test(name)
+      ) {
+        extracted = await file.text();
+      } else {
+        setGenError(
+          "Unsupported file. Try a PDF, Word (.docx), or text file — or use the Image page for photos."
+        );
+        return;
       }
 
-      setText(fullText);              // show the extracted text in the box
-      await generateQuestions(fullText); // and make questions from it
+      if (!extracted.trim()) {
+        setGenError(
+          "Couldn't find any text in that file. If it's a scan or photo, use the Image page."
+        );
+        return;
+      }
+
+      setText(extracted);              // show the extracted text in the box
+      await generateQuestions(extracted); // and make questions from it
+    } catch {
+      setGenError("Couldn't read that file. Try a different one.");
     } finally {
       setLoading(false);
     }
@@ -362,6 +400,43 @@ export default function Home() {
           />
         </div>
       )}
+
+      {/* Updates / Support links, fixed at the top-right just left of the "?" */}
+      <div
+        style={{
+          position: "fixed",
+          top: 20,
+          right: 68, // just left of the 40px "?" at right:20
+          display: "flex",
+          gap: 8,
+          zIndex: 1000
+        }}
+      >
+        {[
+          { label: "Updates", href: "/updates" },
+          { label: "Support", href: "/support" }
+        ].map((link) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            style={{
+              height: 40,
+              padding: "0 16px",
+              display: "inline-flex",
+              alignItems: "center",
+              borderRadius: 3,
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              fontSize: 16,
+              textDecoration: "none",
+              cursor: "pointer"
+            }}
+          >
+            {link.label}
+          </Link>
+        ))}
+      </div>
 
       {/* "?" help circle, fixed to the top-right of the screen */}
       <button
@@ -674,23 +749,23 @@ export default function Home() {
 
       {mode === "text" && (
         <>
-      {/* Hidden file picker — only accepts PDFs */}
+      {/* Hidden file picker — PDFs, Word docs, and text files */}
       <input
         type="file"
-        accept="application/pdf"
+        accept=".pdf,.docx,.txt,.md,.markdown,.csv,text/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ref={fileInputRef}
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) handlePdf(file);
+          if (file) handleFile(file);
           e.target.value = ""; // reset so the same file can be picked again
         }}
       />
 
-      {/* "Add PDF" icon button: a square with a plus in its top-right corner */}
+      {/* "Add document" icon button: a square with a plus in its top-right corner */}
       <button
         onClick={() => fileInputRef.current?.click()}
-        title="Upload a PDF"
+        title="Upload a document (PDF, Word, or text)"
         style={{
           display: "inline-flex",
           alignItems: "center",
