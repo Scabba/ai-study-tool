@@ -4,14 +4,16 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.2";
+const APP_VERSION = "0.3";
 
 const WHATS_NEW = [
-  "✅ Optional instant feedback for your answers",
-  "🔢 Setting to change amount of questions to generate",
-  "👀 This 'What's New' popup so you're aware of new awesome updates",
-  "❤️ Slightly refined UI",
-  "🙂 Faster quiz generation"
+  "💥 An all-new page for generating questions through images",
+  "📝 Support for most text file formats (pdf, docx, txt, md, etc.)",
+  "🆘 A support page",
+  "◀️ An update history page",
+  "🧠 Setting Memory",
+  "🔢 Difficulty Setting",
+  "🪲 Several Bugfixes and UI Improvements"
 ];
 
 export default function WhatsNew() {
@@ -22,6 +24,9 @@ export default function WhatsNew() {
     // We store which version the user last saw.
     const lastSeen = localStorage.getItem("whatsNewVersion");
     if (lastSeen !== APP_VERSION) {
+      // Loading from localStorage must happen in an effect (SSR-safe), so this
+      // one-time setState is intentional.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setOpen(true); // they haven't seen this version yet -> show it
     }
   }, []);
