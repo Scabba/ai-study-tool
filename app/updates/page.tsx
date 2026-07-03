@@ -61,7 +61,7 @@ export default function UpdatesPage() {
         </h1>
       </div>
 
-      {UPDATES.map((u) => (
+      {UPDATES.map((u, i) => (
         <section
           key={u.version}
           style={{
@@ -71,8 +71,32 @@ export default function UpdatesPage() {
             borderRadius: 3
           }}
         >
-          <h2 style={{ margin: 0, fontWeight: "bold", fontSize: 28 }}>
+          <h2
+            style={{
+              margin: 0,
+              fontWeight: "bold",
+              fontSize: 28,
+              display: "flex",
+              alignItems: "center",
+              gap: 10
+            }}
+          >
             v{u.version}
+            {i === 0 && (
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: "normal",
+                  letterSpacing: 0.5,
+                  color: "#cbd5e1",
+                  background: "rgba(148, 163, 184, 0.18)",
+                  borderRadius: 3,
+                  padding: "2px 8px"
+                }}
+              >
+                NEW
+              </span>
+            )}
           </h2>
           <ul
             style={{

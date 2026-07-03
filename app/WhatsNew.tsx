@@ -8,8 +8,10 @@ const APP_VERSION = "0.3";
 
 const WHATS_NEW = [
   "💥 An all-new page for generating questions through images",
+  "📝 Support for most text file formats (pdf, docx, txt, md, etc.)",
   "🆘 A support page",
-  "◀️ An update history page to stay updated on all of the latest features",
+  "◀️ An update history page",
+  "🧠 Setting Memory",
   "🔢 Difficulty Setting",
   "🪲 Several Bugfixes and UI Improvements"
 ];
