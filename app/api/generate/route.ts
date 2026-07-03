@@ -13,6 +13,17 @@ type Q = {
 
 const order: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
 
+// A question is only usable if its 4 options are distinct & non-empty and the
+// answer points at one of A/B/C/D
+function isValidQuestion(q: Q): boolean {
+  if (!q.question?.trim()) return false;
+  const opts = [q.options?.A, q.options?.B, q.options?.C, q.options?.D].map(
+    (o) => (o ?? "").trim().toLowerCase()
+  );
+  if (opts.some((o) => !o) || new Set(opts).size !== 4) return false;
+  return ["A", "B", "C", "D"].includes(q.answer);
+}
+
 // Split notes into `n` contiguous parts so each batch covers a different section.
 // Falls back to the whole text when it's too short to split usefully.
 function splitIntoParts(text: string, n: number): string[] {
@@ -61,7 +72,7 @@ async function makeQuestions(
         content: `Create exactly ${count} multiple-choice questions based on the notes below.
 
 Rules:
-- The "questions" array MUST contain exactly ${count} items — no more, no fewer.
+- The "questions" array MUST contain exactly ${count} items. ONLY as a last resort — when it is genuinely IMPOSSIBLE to make even one relevant question because the notes are empty, pure gibberish, random characters, or a single meaningless word — return {"questions": []} instead. If the notes contain ANY real topic or subject at all, always make the questions. When in doubt, make the questions.
 - Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
 - Exactly one option is correct, and no other option may be equal or equivalent to it.
 - Draw questions from ACROSS all of the notes (beginning, middle, and end) — never only the opening.
@@ -126,6 +137,7 @@ async function makeQuestionsPerSection(
         content: `Create exactly ${count} multiple-choice questions from the notes below, which are divided into ${count} sections.
 
 Rules:
+- ONLY as a last resort — when it is genuinely IMPOSSIBLE to make even one relevant question because the notes are empty, pure gibberish, or random characters — return {"questions": []} instead. If the notes contain ANY real topic or subject at all, always make the questions.
 - The "questions" array MUST contain exactly ${count} items: exactly ONE question per section (question 1 from [Section 1], question 2 from [Section 2], and so on). This ensures the whole document is covered, not just the beginning.
 - The sections are ONLY there to spread coverage. NEVER mention "section", a section number, or that the notes were divided. Each question must read as a standalone question about the material — the student never sees the sections.
 - Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
@@ -199,6 +211,7 @@ Rules:
       : ""
   }
 - Base the questions on what is actually shown; don't invent unrelated facts.
+- Do NOT ask questions whose answer depends on counting many small or repeated items (fingers, dots, tally marks, objects in a pile) — you often miscount these. Only ask about a count when it is small and unmistakable.
 - Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
 - Exactly one option is correct, and no other option may be equal or equivalent to it.
 - Use a mix of easy, medium, and hard, and label each one.
@@ -278,15 +291,7 @@ export async function POST(req: Request) {
       const send = (q: Q) => {
         const key = q.question?.trim().toLowerCase();
         if (!key || seen.has(key) || sent >= count) return;
-
-        // Drop malformed questions: the 4 options must be distinct & non-empty,
-        // and the answer must point at one of A/B/C/D
-        const opts = [q.options?.A, q.options?.B, q.options?.C, q.options?.D].map(
-          (o) => (o ?? "").trim().toLowerCase()
-        );
-        if (opts.some((o) => !o) || new Set(opts).size !== 4) return;
-        if (!["A", "B", "C", "D"].includes(q.answer)) return;
-
+        if (!isValidQuestion(q)) return; // drop malformed / duplicate-option questions
         seen.add(key);
         sentTexts.push(q.question);
         sent++;
@@ -309,22 +314,45 @@ export async function POST(req: Request) {
         const base = Math.floor(count / n);
         const remainder = count % n;
 
-        await Promise.all(
+        // Collect each image's share INDEPENDENTLY (its own quota + retries), so
+        // one image over-producing can't eat another image's slots.
+        const perImageResults = await Promise.all(
           images.map(async (img, i) => {
-            const perImage = base + (i < remainder ? 1 : 0);
-            if (perImage <= 0) return; // this image isn't used for this quiz
-            const batch = await makeQuestionsFromImages(
-              [img],
-              perImage,
-              [],
-              level,
-              i + 1, // this image's number (1-based)
-              n // total images uploaded
-            );
-            sortByDifficulty(batch);
-            for (const q of batch) send(q);
+            const quota = base + (i < remainder ? 1 : 0);
+            if (quota <= 0) return [] as Q[]; // this image isn't used for this quiz
+
+            const collected: Q[] = [];
+            const localSeen = new Set<string>();
+            let tries = 0;
+            while (collected.length < quota && tries < 3) {
+              const batch = await makeQuestionsFromImages(
+                [img],
+                quota - collected.length,
+                collected.map((q) => q.question),
+                level,
+                i + 1, // this image's number (1-based)
+                n // total images uploaded
+              );
+              for (const q of batch) {
+                if (collected.length >= quota) break;
+                const key = q.question?.trim().toLowerCase();
+                if (key && !localSeen.has(key) && isValidQuestion(q)) {
+                  localSeen.add(key);
+                  collected.push(q);
+                }
+              }
+              if (batch.length === 0) break; // nothing usable from this image
+              tries++;
+            }
+            sortByDifficulty(collected);
+            return collected;
           })
         );
+
+        // Send them in image order (image 1's questions, then image 2's, ...)
+        for (const imgQuestions of perImageResults) {
+          for (const q of imgQuestions) send(q);
+        }
 
         // Top up any shortfall
         let attempts = 0;
@@ -384,8 +412,21 @@ export async function POST(req: Request) {
         let attempts = 0;
         while (sent < count && attempts < 3) {
           const batch = await makeQuestions(text, count - sent, sentTexts, level);
+          if (batch.length === 0 && sent === 0) break; // text has no usable content
           for (const q of batch) send(q);
           attempts++;
+        }
+
+        // The text had nothing meaningful to build questions from
+        if (sent === 0) {
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                error:
+                  "We couldn't make relevant questions from that text."
+              }) + "\n"
+            )
+          );
         }
       }
 
