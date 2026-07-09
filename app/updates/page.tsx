@@ -6,6 +6,7 @@ export const metadata = { title: "Updates — EdForce" };
 const UPDATES = [
   {
     version: "0.3",
+    date: "July 3",
     items: [
       "Generate quizzes from images (photos, diagrams, screenshots)",
       "Difficulty + grade/year settings that tailor the difficulty of questions",
@@ -16,6 +17,7 @@ const UPDATES = [
   },
   {
     version: "0.2",
+    date: "June 25",
     items: [
       "Optional instant feedback",
       "Choose how many questions to generate",
@@ -25,6 +27,7 @@ const UPDATES = [
   },
   {
     version: "0.1",
+    date: "June 24",
     items: ["Paste notes or a PDF to generate a 5 question multiple-choice quiz"]
   }
 ];
@@ -112,6 +115,16 @@ export default function UpdatesPage() {
               </li>
             ))}
           </ul>
+          <div
+            style={{
+              marginTop: 12,
+              textAlign: "right",
+              fontSize: 13,
+              color: "#888" // subtle, tucked in the bottom-right
+            }}
+          >
+            {u.date}
+          </div>
         </section>
       ))}
 
