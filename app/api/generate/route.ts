@@ -1,5 +1,4 @@
 import OpenAI, { toFile } from "openai";
-import { YoutubeTranscript } from "youtube-transcript";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -478,15 +477,46 @@ function decodeEntities(s: string): string {
     .replace(/&gt;/g, ">");
 }
 
-// Fetch a YouTube video's captions and return them as one block of text.
-// (Uses the video's existing captions — it does not download the media.)
+// Fetch a YouTube video's captions via Supadata and return them as one block of
+// text. Supadata runs the fetch on infrastructure YouTube doesn't block (Vercel's
+// datacenter IPs are blocked, which is why the old direct fetch failed in prod).
 async function fetchYoutubeCaptions(url: string): Promise<string> {
+  const key = process.env.SUPADATA_API_KEY;
+  if (!key) throw new Error("SUPADATA_API_KEY is not set");
   const id = youtubeId(url);
   if (!id) return "";
-  const parts = await YoutubeTranscript.fetchTranscript(id);
-  return decodeEntities(parts.map((p) => p.text).join(" "))
-    .replace(/\s+/g, " ")
-    .trim();
+
+  const base = `https://api.supadata.ai/v1/youtube/transcript?videoId=${encodeURIComponent(
+    id
+  )}&text=true`;
+
+  // One call to Supadata; with text=true `content` is a plain string.
+  const grab = async (lang?: string): Promise<string> => {
+    const resp = await fetch(lang ? `${base}&lang=${lang}` : base, {
+      headers: { "x-api-key": key }
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`supadata ${resp.status}: ${detail.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    const raw =
+      typeof data?.content === "string"
+        ? data.content
+        : Array.isArray(data?.content)
+          ? data.content.map((c: { text?: string }) => c.text ?? "").join(" ")
+          : "";
+    return decodeEntities(raw).replace(/\s+/g, " ").trim();
+  };
+
+  // Prefer English; fall back to the video's default track if there's no English.
+  try {
+    const en = await grab("en");
+    if (en) return en;
+  } catch {
+    // no English track — fall through
+  }
+  return grab();
 }
 
 export async function POST(req: Request) {
