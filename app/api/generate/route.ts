@@ -552,9 +552,7 @@ export async function POST(req: Request) {
     }
 
     if (ytFailed || !text) {
-      const message = ytFailed
-        ? "We couldn't get captions for that video. It may have captions turned off, be private, or the link may be invalid."
-        : "That video didn't have captions we could use to make questions.";
+      const message = "We couldn't make a quiz from that video. Try a different one.";
       return new Response(JSON.stringify({ error: message }) + "\n", {
         headers: {
           "Content-Type": "application/x-ndjson; charset=utf-8",
