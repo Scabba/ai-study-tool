@@ -1,9 +1,22 @@
 import Link from "next/link";
 
-export const metadata = { title: "Updates — EdForce" };
+export const metadata = { title: "Updates — Athenia" };
 
 // Newest first. Add a new entry at the top each release.
 const UPDATES = [
+  {
+    version: "0.4",
+    date: "July 9",
+    items: [
+      "Rebrand from EdForce to Athenia",
+      "Paste a YouTube link to generate questions",
+      "Upload an audio or video file up to 25 MB to generate questions through audio transcription",
+      "UI overhaul for all users (new colors, fonts, and layout)",
+      "Complete UI overhaul for mobile accessibility",
+      "Sign-In with a Google Account (no use yet)",
+      "True/False question type",
+    ]
+  },
   {
     version: "0.3",
     date: "July 3",
@@ -38,7 +51,7 @@ export default function UpdatesPage() {
       <div style={{ position: "relative" }}>
         <Link
           href="/"
-          aria-label="Back to EdForce"
+          aria-label="Back to Athenia"
           style={{
             position: "absolute",
             left: 0,

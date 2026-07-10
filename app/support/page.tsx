@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-export const metadata = { title: "Support — EdForce" };
+export const metadata = { title: "Support — Athenia" };
 
 export default function SupportPage() {
   return (
@@ -8,7 +8,7 @@ export default function SupportPage() {
       <div style={{ position: "relative" }}>
         <Link
           href="/"
-          aria-label="Back to EdForce"
+          aria-label="Back to Athenia"
           style={{
             position: "absolute",
             left: 0,
@@ -43,9 +43,9 @@ export default function SupportPage() {
         }}
       >
         <p style={{ margin: 0 }}>
-          EdForce is in active development. Requesting improvements, reporting
+          Athenia is in active development. Requesting improvements, reporting
           issues, or even suggesting a next step in development can be extremely
-          helpful. The goal of EdForce is to provide students with an amazing
+          helpful. The goal of Athenia is to provide students with an amazing
           tool that comes with great customer support.
         </p>
       </section>
