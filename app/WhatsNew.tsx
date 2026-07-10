@@ -4,16 +4,17 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.3";
+const APP_VERSION = "0.4";
 
 const WHATS_NEW = [
-  "💥 An all-new page for generating questions through images",
-  "📝 Support for most text file formats (pdf, docx, txt, md, etc.)",
-  "🆘 A support page",
-  "◀️ An update history page",
-  "🧠 Setting Memory",
-  "🔢 Difficulty Setting",
-  "🪲 Several Bugfixes and UI Improvements"
+  "💥 Rebrand from EdForce to Athenia",
+  "🔗 Paste a YouTube link to generate questions",
+  "🎵 Upload an audio or video file up to 25 MB to generate questions through audio transcription",
+  "🔄 UI overhaul for all users (new colors, fonts, and layout)",
+  "📱 Complete UI overhaul for mobile accessibility",
+  "👤 Sign-In with a Google Account (no use yet)",
+  "🆕 True/False question type",
+  "🪲 Bugfix"
 ];
 
 export default function WhatsNew() {

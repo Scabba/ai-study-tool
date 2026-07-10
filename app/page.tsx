@@ -1,22 +1,80 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import Link from "next/link";
 import WhatsNew from "./WhatsNew";
+import AuthButton from "./components/AuthButton";
+import { createClient } from "@/lib/supabase/client";
 
-// The shape of one multiple-choice question coming back from the server
-type Question = {
+// A multiple-choice question coming back from the server
+type MCQuestion = {
+  type?: "mc";
   question: string;
   options: { A: string; B: string; C: string; D: string };
   answer: string;
   difficulty: string;
 };
 
+// A true/false question — a statement the user judges "True" or "False"
+type TFQuestion = {
+  type: "tf";
+  question: string;
+  answer: "True" | "False";
+  difficulty: string;
+};
+
+type Question = MCQuestion | TFQuestion;
+
 // Most photos you can upload at once
 const MAX_IMAGES = 10;
 
 // Difficulty slider stops (index 0 -> 2)
 const DIFFICULTIES = ["Middle School", "High School", "University"];
+
+// True on narrow (phone) screens. Uses matchMedia so it updates live when the
+// window is resized or rotated, and renders as desktop-first on the server.
+function useIsMobile(breakpoint = 640) {
+  return useSyncExternalStore(
+    (onChange) => {
+      const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(`(max-width: ${breakpoint}px)`).matches,
+    () => false // server / first paint: assume desktop
+  );
+}
+
+// Muted slate accent for selected tabs / the Generate button — matches the
+// "NEW" badge on the Updates page instead of the old bright blue.
+const ACCENT_BG = "rgba(148, 163, 184, 0.18)";
+// A stronger fill for the multi-option pickers (Questions / Grade), where the
+// faint version made it hard to tell which one was selected.
+const ACCENT_BG_STRONG = "rgba(148, 163, 184, 0.35)";
+const ACCENT_TEXT = "#cbd5e1";
+// Muted grading colours — softer than pure green/red for right / wrong titles
+// and the correct-answer dot, with a muted green for the Submit / grade button.
+const CORRECT_GREEN = "#57b98a";
+const WRONG_RED = "#e0776b";
+const SUBMIT_GREEN = "#3f9169";
+
+// Whether Supabase auth is wired up (keys present in the browser bundle)
+const SUPABASE_CONFIGURED =
+  !!process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+// Shared style for the icon rows inside the account oval
+const ovalItem: React.CSSProperties = {
+  width: "100%",
+  height: 40,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "none",
+  background: "transparent",
+  color: "inherit",
+  cursor: "pointer"
+};
 
 // Grade/Year choices for each difficulty (same index order as DIFFICULTIES)
 const GRADE_OPTIONS = [
@@ -27,8 +85,21 @@ const GRADE_OPTIONS = [
 
 export default function Home() {
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"text" | "image">("text"); // which page tab is active
+  const [mode, setMode] = useState<"text" | "image" | "audio">("text"); // which page tab is active
   const [images, setImages] = useState<string[]>([]); // uploaded images on the image page
+  // uploaded audio/video: previewUrl (local player), remoteUrl (Supabase Storage), path (for cleanup)
+  const [audioFiles, setAudioFiles] = useState<
+    { name: string; previewUrl: string; remoteUrl: string; path: string; isVideo: boolean }[]
+  >([]);
+  const [audioUploading, setAudioUploading] = useState(false); // is a file uploading to Storage?
+  const [youtubeUrl, setYoutubeUrl] = useState(""); // pasted YouTube link on the audio page
+  const [showYoutube, setShowYoutube] = useState(false); // is the YouTube link box open?
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // the mobile hamburger menu
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false); // account dropdown under the "?"
+  const [authEmail, setAuthEmail] = useState<string | null>(null); // signed-in user's email, if any
+  const [authAvatar, setAuthAvatar] = useState<string | null>(null); // signed-in user's photo, if any
+  const [authClient] = useState(() => (SUPABASE_CONFIGURED ? createClient() : null));
+  const isMobile = useIsMobile();
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<number, string>>({}); // which letter the user picked per question
@@ -37,7 +108,8 @@ export default function Home() {
   const [instantFeedback, setInstantFeedback] = useState(false); // reveal right/wrong as you answer
   const [toggleError, setToggleError] = useState<string | null>(null); // shown if you try to change instant feedback mid-quiz
   const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
-  const [amount, setAmount] = useState(5); // how many questions to generate
+  const [amount, setAmount] = useState(5); // how many multiple-choice questions to generate
+  const [tfAmount, setTfAmount] = useState(0); // how many true/false questions (0 = none)
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
   const [difficulty, setDifficulty] = useState(1); // 0=Middle School, 1=High School, 2=University
@@ -46,11 +118,62 @@ export default function Home() {
   const [flashIndex, setFlashIndex] = useState<number | null>(null); // which question to flash as "missing"
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden PDF file picker
   const imageInputRef = useRef<HTMLInputElement>(null); // hidden image file picker
+  const audioInputRef = useRef<HTMLInputElement>(null); // hidden audio/video file picker
   const noticeRef = useRef<HTMLDivElement>(null); // the pre-release notice box
   const noticeButtonRef = useRef<HTMLButtonElement>(null); // the "?" button
   const settingsRef = useRef<HTMLDivElement>(null); // the settings panel
   const settingsButtonRef = useRef<HTMLButtonElement>(null); // the cog button
+  const mobileMenuRef = useRef<HTMLDivElement>(null); // the mobile hamburger + its dropdown
+  const accountMenuRef = useRef<HTMLDivElement>(null); // the mobile account button + its dropdown
   const skipFirstSave = useRef(true); // don't save settings on the very first render
+  const genAbortRef = useRef<AbortController | null>(null); // cancels an in-flight generation
+
+  // Close the mobile hamburger menu when you tap outside it
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (!mobileMenuRef.current?.contains(e.target as Node)) {
+        setMobileMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [mobileMenuOpen]);
+
+  // Close the account dropdown when you tap outside it
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (!accountMenuRef.current?.contains(e.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [accountMenuOpen]);
+
+  // Track the signed-in user (email + photo) for the account button
+  useEffect(() => {
+    if (!authClient) return;
+    let active = true;
+    const apply = (user: { email?: string; user_metadata?: Record<string, unknown> } | null) => {
+      setAuthEmail(user?.email ?? null);
+      const meta = user?.user_metadata ?? {};
+      setAuthAvatar(
+        (meta.avatar_url as string) ?? (meta.picture as string) ?? null
+      );
+    };
+    authClient.auth.getUser().then(({ data }) => {
+      if (active) apply(data.user);
+    });
+    const { data: sub } = authClient.auth.onAuthStateChange((_e, session) =>
+      apply(session?.user ?? null)
+    );
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [authClient]);
 
   // Close the notice when you click anywhere outside it (or its button)
   useEffect(() => {
@@ -86,14 +209,15 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showSettings]);
 
-  // Animate the placeholder dots (1 -> 2 -> 3 -> 1 ...) while the box is empty
+  // Animate the dots (1 -> 2 -> 3 -> 1 ...) for the empty-box placeholder and
+  // for the "Uploading..." message on the audio page.
   useEffect(() => {
-    if (text !== "") return; // placeholder only shows when empty, so don't bother otherwise
+    if (text !== "" && !audioUploading) return; // nothing using the dots right now
     const id = setInterval(() => {
       setDotCount((c) => (c === 3 ? 1 : c + 1));
     }, 400);
     return () => clearInterval(id); // stop the timer when we're done
-  }, [text]);
+  }, [text, audioUploading]);
 
   // Load the user's saved settings once, on first load
   useEffect(() => {
@@ -108,6 +232,7 @@ export default function Home() {
       if (s.gradeYear === null || typeof s.gradeYear === "string") setGradeYear(s.gradeYear);
       if (typeof s.instantFeedback === "boolean") setInstantFeedback(s.instantFeedback);
       if (typeof s.amount === "number") setAmount(s.amount);
+      if (typeof s.tfAmount === "number") setTfAmount(s.tfAmount);
       /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
       // ignore bad/missing saved data
@@ -124,12 +249,12 @@ export default function Home() {
     try {
       localStorage.setItem(
         "edforceSettings",
-        JSON.stringify({ difficulty, gradeYear, instantFeedback, amount })
+        JSON.stringify({ difficulty, gradeYear, instantFeedback, amount, tfAmount })
       );
     } catch {
       // storage might be unavailable — not critical
     }
-  }, [difficulty, gradeYear, instantFeedback, amount]);
+  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount]);
 
   const placeholder = "paste text here" + ".".repeat(dotCount);
 
@@ -178,9 +303,19 @@ export default function Home() {
   }
 
   // Core generation: send a payload (text OR image) and stream questions in
-  async function runGeneration(payload: { text?: string; images?: string[] }) {
+  async function runGeneration(payload: {
+    text?: string;
+    images?: string[];
+    audioUrl?: string;
+    audioName?: string;
+    youtube?: string;
+  }) {
     if (!gradeYear) {
       setGenError("Choose grade level in settings to generate questions (top left)");
+      return;
+    }
+    if (amount === 0 && tfAmount === 0) {
+      setGenError("Please choose a question amount larger than zero to generate.");
       return;
     }
     setGenError(null);
@@ -189,13 +324,19 @@ export default function Home() {
     setAnswers({});      // clear any previous selections
     setSubmitted(false); // back to "not submitted yet"
     setToggleError(null); // fresh quiz -> toggle is usable again
+
+    // A fresh controller for this run, so switching pages can cancel it
+    const controller = new AbortController();
+    genAbortRef.current = controller;
+
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ ...payload, count: amount, level: describeLevel() })
+        body: JSON.stringify({ ...payload, count: amount, tfCount: tfAmount, level: describeLevel() }),
+        signal: controller.signal
       });
 
       if (!res.body) return;
@@ -207,6 +348,7 @@ export default function Home() {
       let buffer = "";
 
       const handleLine = async (line: string) => {
+        if (controller.signal.aborted) return; // page was switched — drop it
         const item = JSON.parse(line);
         if (item.error) {
           setGenError(item.error); // the server told us what went wrong
@@ -230,8 +372,16 @@ export default function Home() {
       }
 
       if (buffer.trim()) await handleLine(buffer);
+    } catch (err) {
+      // A page switch aborts the request on purpose — ignore that; re-throw real errors
+      if ((err as Error)?.name !== "AbortError") throw err;
     } finally {
-      setLoading(false); // turn the dots OFF when done (even if it failed)
+      // Only clear the loading state if THIS run is still the current one
+      // (a newer run or a page switch may have replaced/cancelled it)
+      if (genAbortRef.current === controller) {
+        genAbortRef.current = null;
+        setLoading(false); // turn the dots OFF when done (even if it failed)
+      }
     }
   }
 
@@ -289,10 +439,113 @@ export default function Home() {
     await runGeneration({ images });
   }
 
-  // Switch between the Text and Image tabs — each is its own fresh page,
+  // Remove a single uploaded image by its position
+  function removeImage(index: number) {
+    setImages(images.filter((_, i) => i !== index));
+  }
+
+  // Upload the single audio/video file straight to Supabase Storage, so it
+  // never rides through the API request body (dodges Vercel's ~4.5 MB cap).
+  async function addAudio(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const file = files[0]; // only one audio/video at a time
+    if (file.size > 25 * 1024 * 1024) {
+      setGenError("The audio or video file must be under 25 MB");
+      return;
+    }
+    setGenError(null);
+    setAudioUploading(true);
+    try {
+      const supabase = createClient();
+      const ext = file.name.includes(".") ? file.name.split(".").pop() : "dat";
+      const path = `${crypto.randomUUID()}.${ext}`;
+      const { error } = await supabase.storage
+        .from("audio")
+        .upload(path, file, { contentType: file.type || undefined, upsert: false });
+      if (error) throw error;
+      const { data: pub } = supabase.storage.from("audio").getPublicUrl(path);
+
+      const prev = audioFiles[0]; // this file replaces any previous one
+      setYoutubeUrl(""); // a file and a link are mutually exclusive
+      setAudioFiles([
+        {
+          name: file.name,
+          previewUrl: URL.createObjectURL(file),
+          remoteUrl: pub.publicUrl,
+          path,
+          isVideo: (file.type || "").startsWith("video")
+        }
+      ]);
+      if (prev) {
+        URL.revokeObjectURL(prev.previewUrl);
+        supabase.storage.from("audio").remove([prev.path]); // clean up the old upload
+      }
+    } catch (e) {
+      const msg = (e as Error)?.message ?? "unknown error";
+      console.error("[audio upload] failed:", e);
+      setGenError("Couldn't upload that file: " + msg);
+    } finally {
+      setAudioUploading(false);
+    }
+  }
+
+  // Generate a quiz from the uploaded audio/video, or from a YouTube link's captions
+  async function generateFromAudio() {
+    if (audioFiles.length > 0) {
+      await runGeneration({
+        audioUrl: audioFiles[0].remoteUrl,
+        audioName: audioFiles[0].name
+      });
+      return;
+    }
+    const yt = youtubeUrl.trim();
+    if (yt) {
+      await runGeneration({ youtube: yt });
+      return;
+    }
+    setGenError("Please upload an audio or video to generate questions");
+  }
+
+  // Remove the uploaded audio/video file (and delete it from Storage)
+  function removeAudio(index: number) {
+    const removed = audioFiles[index];
+    setAudioFiles(audioFiles.filter((_, i) => i !== index));
+    if (removed) {
+      URL.revokeObjectURL(removed.previewUrl);
+      try {
+        createClient().storage.from("audio").remove([removed.path]);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+
+  // Account switcher actions (used by the mobile menu's account fly-out)
+  async function accountSignIn(switchAccount = false) {
+    if (!authClient) return;
+    setAccountMenuOpen(false);
+    await authClient.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+        // Force Google's account picker so they can choose a different login
+        ...(switchAccount ? { queryParams: { prompt: "select_account" } } : {})
+      }
+    });
+  }
+  async function accountSignOut() {
+    if (!authClient) return;
+    await authClient.auth.signOut();
+    setAuthEmail(null);
+    setAuthAvatar(null);
+    setAccountMenuOpen(false);
+  }
+
+  // Switch between the Text / Image / Audio tabs — each is its own fresh page,
   // so clear the current quiz and any messages when you switch
-  function switchMode(m: "text" | "image") {
+  function switchMode(m: "text" | "image" | "audio") {
     if (m === mode) return;
+    genAbortRef.current?.abort(); // stop any generation still streaming into the old page
     setMode(m);
     setQuestions([]);
     setAnswers({});
@@ -300,6 +553,20 @@ export default function Home() {
     setGenError(null);
     setToggleError(null);
     setImages([]);
+    // Clean up any uploaded audio file we're leaving behind
+    if (audioFiles.length > 0) {
+      try {
+        createClient()
+          .storage.from("audio")
+          .remove(audioFiles.map((a) => a.path));
+      } catch {
+        // best-effort cleanup
+      }
+      audioFiles.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+    }
+    setAudioFiles([]);
+    setYoutubeUrl("");
+    setShowYoutube(false);
     setFullscreenImage(null);
   }
 
@@ -412,7 +679,9 @@ export default function Home() {
           zIndex: 1000
         }}
       >
-        {[
+        {!isMobile && <AuthButton />}
+        {!isMobile &&
+        [
           { label: "Updates", href: "/updates" },
           { label: "Support", href: "/support" }
         ].map((link) => (
@@ -477,11 +746,161 @@ export default function Home() {
             borderRadius: 3,
             padding: 16,
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
-            zIndex: 1000
+            zIndex: 1100 // sit above the mobile profile button
           }}
         >
-          Notice: this is a pre-release version of EdForce. Many updates are
+          Notice: this is a pre-release version of Athenia. Many updates are
           still necessary to create the perfect study tool 🙂
+        </div>
+      )}
+
+      {/* Mobile account button: profile picture + caret, under the "?" */}
+      {isMobile && authClient && (
+        <div ref={accountMenuRef} style={{ position: "fixed", top: 70, right: 20, zIndex: 1000 }}>
+          {authEmail ? (
+            accountMenuOpen ? (
+              // Expanded oval: avatar on top, then switch / log out, divided by lines
+              <div
+                style={{
+                  width: 40,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  border: "2px solid #777",
+                  borderRadius: 22,
+                  background: "var(--background)",
+                  overflow: "hidden"
+                }}
+              >
+                <button
+                  onClick={() => setAccountMenuOpen(false)}
+                  title={authEmail}
+                  aria-label="Account"
+                  aria-expanded
+                  style={{
+                    width: "100%",
+                    height: 36,
+                    padding: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "none",
+                    background: "transparent",
+                    color: "inherit",
+                    cursor: "pointer",
+                    overflow: "hidden"
+                  }}
+                >
+                  {authAvatar ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={authAvatar}
+                      alt=""
+                      style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                    />
+                  ) : (
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="8" r="4" />
+                      <path d="M4 20 a8 8 0 0 1 16 0" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  onClick={() => accountSignIn(true)}
+                  title="Switch account"
+                  aria-label="Switch account"
+                  style={{ ...ovalItem, borderTop: "1px solid #888" }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 9 h13" />
+                    <path d="M14 6 l3 3 l-3 3" />
+                    <path d="M20 15 h-13" />
+                    <path d="M10 12 l-3 3 l3 3" />
+                  </svg>
+                </button>
+                <button
+                  onClick={accountSignOut}
+                  title="Log out"
+                  aria-label="Log out"
+                  style={{ ...ovalItem, borderTop: "1px solid #888" }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 5 H7 a1 1 0 0 0 -1 1 V18 a1 1 0 0 0 1 1 H14" />
+                    <path d="M11 12 H21" />
+                    <path d="M18 9 l3 3 l-3 3" />
+                  </svg>
+                </button>
+              </div>
+            ) : (
+              // Collapsed: a plain 40x40 circle, identical in build to the "?" / hamburger
+              <button
+                onClick={() => setAccountMenuOpen(true)}
+                title={authEmail}
+                aria-label="Account"
+                aria-expanded={false}
+                style={{
+                  width: 40,
+                  height: 40,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  border: "2px solid #777",
+                  borderRadius: "50%",
+                  background: "var(--background)",
+                  color: "inherit",
+                  cursor: "pointer",
+                  overflow: "hidden"
+                }}
+              >
+                {authAvatar ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={authAvatar}
+                    alt=""
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                  />
+                ) : (
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M4 20 a8 8 0 0 1 16 0" />
+                  </svg>
+                )}
+              </button>
+            )
+          ) : (
+            <button
+              onClick={() => accountSignIn()}
+              title="Sign in with Google"
+              aria-label="Sign in with Google"
+              style={{
+                width: 40,
+                height: 40,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: "2px solid #777",
+                borderRadius: "50%",
+                background: "var(--background)",
+                color: "inherit",
+                cursor: "pointer"
+              }}
+            >
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 20 a8 8 0 0 1 16 0" />
+              </svg>
+            </button>
+          )}
         </div>
       )}
 
@@ -578,7 +997,7 @@ export default function Home() {
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  background: instantFeedback ? "#1e40af" : "#000",
+                  background: instantFeedback ? ACCENT_BG : "#000",
                   border: "1px solid #999",
                   borderRadius: 3
                 }}
@@ -589,7 +1008,7 @@ export default function Home() {
                     height="12"
                     viewBox="0 0 24 24"
                     fill="none"
-                    stroke="white"
+                    stroke={ACCENT_TEXT}
                     strokeWidth="3"
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -607,11 +1026,11 @@ export default function Home() {
             )}
           </div>
 
-          {/* Question amount: pick one of 5 / 10 / 15 / 20 */}
+          {/* Multiple-choice amount: pick one of 5 / 10 / 15 / 20 */}
           <div>
-            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Questions</div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Multiple-choice questions</div>
             <div style={{ display: "flex", gap: 8 }}>
-              {[5, 10, 15, 20].map((n) => (
+              {[0, 5, 10, 15, 20].map((n) => (
                 <button
                   key={n}
                   onClick={() => setAmount(n)}
@@ -620,9 +1039,34 @@ export default function Home() {
                     height: 36,
                     borderRadius: 3,
                     border: "2px solid #888",
-                    background: amount === n ? "#1e40af" : "transparent",
-                    color: amount === n ? "white" : "inherit",
+                    background: amount === n ? ACCENT_BG_STRONG : "transparent",
+                    color: amount === n ? ACCENT_TEXT : "inherit",
                     fontWeight: amount === n ? "bold" : "normal",
+                    cursor: "pointer"
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* True/False amount: pick one of 5 / 10 / 15 / 20 */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>True/False questions</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[0, 5, 10, 15, 20].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setTfAmount(n)}
+                  style={{
+                    width: 44,
+                    height: 36,
+                    borderRadius: 3,
+                    border: "2px solid #888",
+                    background: tfAmount === n ? ACCENT_BG_STRONG : "transparent",
+                    color: tfAmount === n ? ACCENT_TEXT : "inherit",
+                    fontWeight: tfAmount === n ? "bold" : "normal",
                     cursor: "pointer"
                   }}
                 >
@@ -688,8 +1132,8 @@ export default function Home() {
                     padding: "0 10px",
                     borderRadius: 3,
                     border: "2px solid #888",
-                    background: gradeYear === g ? "#1e40af" : "transparent",
-                    color: gradeYear === g ? "white" : "inherit",
+                    background: gradeYear === g ? ACCENT_BG_STRONG : "transparent",
+                    color: gradeYear === g ? ACCENT_TEXT : "inherit",
                     fontWeight: gradeYear === g ? "bold" : "normal",
                     cursor: "pointer"
                   }}
@@ -705,16 +1149,20 @@ export default function Home() {
       <h1
         style={{
           textAlign: "center",
+          fontFamily: "var(--font-playfair), Georgia, serif",
+          fontStyle: "italic",
           fontWeight: "bold",
           fontSize: 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: 32   // matches the gap between the tabs and the image button
+          marginBottom: 32,  // matches the gap between the tabs and the image button
+          transform: "translateY(10px)"  // nudge just the text down, without shifting the layout below
         }}
       >
-        EdForce
+        Athenia
       </h1>
 
-      {/* Tab bar: fixed at the top-left, next to the settings cog */}
+      {/* Tab bar: fixed at the top-left (desktop only — mobile uses the menu) */}
+      {!isMobile && (
       <div
         style={{
           position: "fixed",
@@ -722,10 +1170,11 @@ export default function Home() {
           left: 72, // just right of the 40px cog at left:20
           display: "flex",
           gap: 8,
-          zIndex: 1000
+          zIndex: 1000,
+          background: "var(--background)" // solid, so scrolling questions don't bleed through
         }}
       >
-        {(["text", "image"] as const).map((m) => (
+        {(["text", "image", "audio"] as const).map((m) => (
           <button
             key={m}
             onClick={() => switchMode(m)}
@@ -734,9 +1183,9 @@ export default function Home() {
               padding: "0 16px",
               borderRadius: 3,
               border: "2px solid #888",
-              background: mode === m ? "#1e40af" : "transparent",
-              color: mode === m ? "white" : "inherit",
-              fontWeight: mode === m ? "bold" : "normal",
+              background: mode === m ? ACCENT_BG : "transparent",
+              color: mode === m ? ACCENT_TEXT : "inherit",
+              fontWeight: "bold",
               fontSize: 16,
               cursor: "pointer",
               textTransform: "capitalize"
@@ -746,6 +1195,105 @@ export default function Home() {
           </button>
         ))}
       </div>
+      )}
+
+      {/* Mobile menu: hamburger under the cog (hidden while the settings panel is open) */}
+      {isMobile && !showSettings && (
+        <div ref={mobileMenuRef} style={{ position: "fixed", top: 70, left: 20, zIndex: 1000 }}>
+          <button
+            onClick={() => setMobileMenuOpen((v) => !v)}
+            aria-label="Menu"
+            aria-expanded={mobileMenuOpen}
+            style={{
+              width: 40,
+              height: 40,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              gap: 5,
+              padding: "0 9px",
+              border: "2px solid #888",
+              borderRadius: 3,
+              background: "var(--background)",
+              color: "inherit",
+              cursor: "pointer",
+              position: "relative",
+              zIndex: 1 // sit above the menu so its border isn't overlapped
+            }}
+          >
+            {/* three lines, descending in width */}
+            <span style={{ width: 20, height: 2, background: "currentColor", borderRadius: 2 }} />
+            <span style={{ width: 15, height: 2, background: "currentColor", borderRadius: 2 }} />
+            <span style={{ width: 10, height: 2, background: "currentColor", borderRadius: 2 }} />
+          </button>
+
+          {mobileMenuOpen && (
+            <div
+              role="menu"
+              style={{
+                position: "absolute",
+                top: 38, // 2px up so its top border merges with the button's bottom into one line
+                left: 0,
+                minWidth: 150,
+                display: "flex",
+                flexDirection: "column",
+                background: "var(--background)",
+                border: "2px solid #888",
+                borderRadius: 3,
+                overflow: "hidden",
+                zIndex: 0 // behind the button, so the shared edge reads as one line
+              }}
+            >
+              {(["text", "image", "audio"] as const).map((m) => (
+                <button
+                  key={m}
+                  role="menuitem"
+                  onClick={() => {
+                    switchMode(m);
+                    setMobileMenuOpen(false);
+                  }}
+                  style={{
+                    padding: "12px 16px",
+                    textAlign: "left",
+                    border: "none",
+                    background: mode === m ? ACCENT_BG : "transparent",
+                    color: mode === m ? ACCENT_TEXT : "inherit",
+                    fontSize: 16,
+                    fontWeight: mode === m ? "bold" : "normal",
+                    cursor: "pointer",
+                    textTransform: "capitalize"
+                  }}
+                >
+                  {m}
+                </button>
+              ))}
+              {[
+                { label: "Support", href: "/support" },
+                { label: "Updates", href: "/updates" }
+              ].map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  style={{
+                    padding: "12px 16px",
+                    textAlign: "left",
+                    borderTop: "1px solid #888",
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 16,
+                    textDecoration: "none",
+                    cursor: "pointer"
+                  }}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {mode === "text" && (
         <>
@@ -819,12 +1367,13 @@ export default function Home() {
         onClick={() => generateQuestions()}
         disabled={loading}
         style={{
-          marginTop: 12,
+          display: "block",
+          margin: "12px auto 0", // centered under the textarea
           padding: "10px 24px",
           minWidth: 190,
           height: 44,
-          background: "#1e40af", // darker blue
-          color: "white",
+          background: ACCENT_BG,
+          color: ACCENT_TEXT,
           border: "none",
           borderRadius: 3,
           fontSize: 16,
@@ -867,21 +1416,48 @@ export default function Home() {
             }}
           >
             {images.map((src, i) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={i}
-                src={src}
-                alt={`Upload ${i + 1}`}
-                onClick={() => setFullscreenImage(src)}
-                style={{
-                  maxWidth: 160,
-                  maxHeight: 160,
-                  border: "2px solid #888",
-                  borderRadius: 3,
-                  objectFit: "contain",
-                  cursor: "pointer" // click to view fullscreen
-                }}
-              />
+              <div key={i} style={{ position: "relative", display: "inline-block" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt={`Upload ${i + 1}`}
+                  onClick={() => setFullscreenImage(src)}
+                  style={{
+                    display: "block",
+                    maxWidth: 160,
+                    maxHeight: 160,
+                    border: "2px solid #888",
+                    borderRadius: 3,
+                    objectFit: "contain",
+                    cursor: "pointer" // click to view fullscreen
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeImage(i)}
+                  aria-label="Remove image"
+                  title="Remove"
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 4,
+                    width: 22,
+                    height: 22,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                    border: "none",
+                    background: "rgba(0,0,0,0.6)",
+                    color: "#fff",
+                    fontSize: 15,
+                    lineHeight: 1,
+                    cursor: "pointer"
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             ))}
           </div>
 
@@ -960,8 +1536,260 @@ export default function Home() {
                 padding: "10px 24px",
                 minWidth: 190,
                 height: 44,
-                background: "#1e40af",
-                color: "white",
+                background: ACCENT_BG,
+                color: ACCENT_TEXT,
+                border: "none",
+                borderRadius: 3,
+                fontSize: 16,
+                cursor: loading ? "default" : "pointer"
+              }}
+            >
+              {loading ? (
+                <span className="loading-dots">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              ) : (
+                "Generate"
+              )}
+            </button>
+
+            {genError && (
+              <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
+                {genError}
+              </div>
+            )}
+          </div>
+
+          {/* Right column: spacer to keep the controls centered */}
+          <div style={{ flex: 1 }} />
+        </div>
+      )}
+
+      {/* Audio page: uploaded files on the left, upload controls centered */}
+      {mode === "audio" && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginTop: 20 }}>
+          {/* Left column: uploaded audio/video files, each with a player */}
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12
+            }}
+          >
+            {audioFiles.map((a, i) => (
+              <div
+                key={i}
+                style={{
+                  border: "2px solid #888",
+                  borderRadius: 3,
+                  padding: 10
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8
+                  }}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 14,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: "#c7c7c7"
+                    }}
+                  >
+                    {a.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeAudio(i)}
+                    aria-label="Remove file"
+                    title="Remove"
+                    style={{
+                      flexShrink: 0,
+                      width: 22,
+                      height: 22,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRadius: "50%",
+                      border: "1px solid #888",
+                      background: "transparent",
+                      color: "inherit",
+                      fontSize: 14,
+                      lineHeight: 1,
+                      cursor: "pointer"
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                {a.isVideo ? (
+                  <video
+                    src={a.previewUrl}
+                    controls
+                    style={{ width: "100%", maxHeight: 180, borderRadius: 3 }}
+                  />
+                ) : (
+                  <audio src={a.previewUrl} controls style={{ width: "100%" }} />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Center column: upload controls */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              marginTop: 48
+            }}
+          >
+            {/* Hidden audio/video picker (can select several at once) */}
+            <input
+              type="file"
+              accept="audio/*,video/*,.mp3,.mp4,.m4a,.wav,.webm,.ogg,.oga,.mpeg,.mpga,.flac"
+              ref={audioInputRef}
+              style={{ display: "none" }}
+              onChange={(e) => {
+                addAudio(e.target.files);
+                e.target.value = ""; // reset so the same files can be picked again
+              }}
+            />
+
+            {/* Add buttons: microphone (upload a file) + YouTube (paste a link) */}
+            <div style={{ display: "flex", gap: 12 }}>
+              {/* Microphone box with a plus — click to add audio */}
+              <button
+                onClick={() => audioInputRef.current?.click()}
+                disabled={loading || audioUploading}
+                title="Add audio or video"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 96,
+                  height: 96,
+                  background: "transparent",
+                  border: "2px solid #888",
+                  borderRadius: 3,
+                  cursor: loading ? "default" : "pointer",
+                  color: "inherit"
+                }}
+              >
+                <svg
+                  width="52"
+                  height="52"
+                  viewBox="0 0 32 32"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  {/* microphone capsule */}
+                  <rect x="10" y="4" width="8" height="13" rx="4" />
+                  {/* pickup arc under the capsule */}
+                  <path d="M6 15 a8 8 0 0 0 16 0" />
+                  {/* stem + base */}
+                  <line x1="14" y1="23" x2="14" y2="26" />
+                  <line x1="10" y1="26" x2="18" y2="26" />
+                  {/* plus, floating just off the top-right corner */}
+                  <line x1="27" y1="3.5" x2="27" y2="9.5" />
+                  <line x1="24" y1="6.5" x2="30" y2="6.5" />
+                </svg>
+              </button>
+
+              {/* YouTube box — click to reveal a link box */}
+              <button
+                onClick={() => setShowYoutube((v) => !v)}
+                disabled={loading || audioUploading}
+                title="Use a YouTube link"
+                aria-pressed={showYoutube}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 96,
+                  height: 96,
+                  background: "transparent",
+                  border: showYoutube ? "2px solid #cbd5e1" : "2px solid #888",
+                  borderRadius: 3,
+                  cursor: loading ? "default" : "pointer",
+                  color: "inherit"
+                }}
+              >
+                <svg
+                  width="44"
+                  height="44"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  {/* chain-link icon */}
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+              </button>
+            </div>
+
+            {/* YouTube link box (appears when the YouTube button is clicked) */}
+            {showYoutube && (
+              <input
+                type="text"
+                value={youtubeUrl}
+                onChange={(e) => {
+                  setYoutubeUrl(e.target.value);
+                  if (e.target.value.trim()) setAudioFiles([]); // a link replaces a file
+                  setGenError(null);
+                }}
+                placeholder="Paste a YouTube link"
+                style={{
+                  marginTop: 12,
+                  width: 260,
+                  height: 40,
+                  border: "2px solid #888",
+                  borderRadius: 3,
+                  padding: "0 12px",
+                  fontSize: 15,
+                  background: "transparent",
+                  color: "inherit"
+                }}
+              />
+            )}
+
+            <p style={{ opacity: 0.7, marginTop: 12 }}>
+              {audioUploading
+                ? "Uploading" + ".".repeat(dotCount)
+                : "Upload audio or a YouTube link to generate questions"}
+            </p>
+
+            {/* Generate button (transcribes, then builds the quiz) */}
+            <button
+              onClick={() => generateFromAudio()}
+              disabled={loading || audioUploading}
+              style={{
+                marginTop: 16,
+                padding: "10px 24px",
+                minWidth: 190,
+                height: 44,
+                background: ACCENT_BG,
+                color: ACCENT_TEXT,
                 border: "none",
                 borderRadius: 3,
                 fontSize: 16,
@@ -1001,8 +1829,8 @@ export default function Home() {
           // Colour the title green (right) or red (wrong) once revealed
           const titleColor = revealed
             ? answers[i] === q.answer
-              ? "green"
-              : "red"
+              ? CORRECT_GREEN
+              : WRONG_RED
             : undefined;
 
           return (
@@ -1023,15 +1851,23 @@ export default function Home() {
                 {i + 1}. {q.question}
               </p>
 
-              {(["A", "B", "C", "D"] as const).map((letter) => {
+              {/* Build the answer choices: True/False for a TF question,
+                  otherwise the four labelled options of a MC question. */}
+              {(q.type === "tf"
+                ? (["True", "False"] as const).map((v) => ({ value: v as string, label: v as string }))
+                : (["A", "B", "C", "D"] as const).map((letter) => ({
+                    value: letter as string,
+                    label: `${letter}. ${q.options[letter]}`
+                  }))
+              ).map((choice) => {
                 // Show the green dot in the circle ONLY for the correct option
                 // on a question the user got wrong (once revealed).
                 const showGreenDot =
-                  revealed && answers[i] !== q.answer && letter === q.answer;
+                  revealed && answers[i] !== q.answer && choice.value === q.answer;
 
                 return (
                   <label
-                    key={letter}
+                    key={choice.value}
                     style={{
                       display: "flex",       // sits on its own line...
                       width: "fit-content",  // ...but only as wide as its content (so you click the dot/letter/text, not the whole row)
@@ -1048,7 +1884,7 @@ export default function Home() {
                           width: 13,
                           height: 13,
                           borderRadius: "50%",
-                          background: "green",
+                          background: CORRECT_GREEN,
                           flexShrink: 0
                         }}
                       />
@@ -1056,18 +1892,18 @@ export default function Home() {
                       <input
                         type="radio"
                         name={`question-${i}`}
-                        checked={answers[i] === letter}
+                        checked={answers[i] === choice.value}
                         onChange={() => {
                           // lock a question once its answer is revealed, but
                           // DON'T disable the radio (disabled greys out the
                           // user's yellow dot)
-                          if (!revealed) setAnswers({ ...answers, [i]: letter });
+                          if (!revealed) setAnswers({ ...answers, [i]: choice.value });
                         }}
                         style={{ accentColor: "#eab308", margin: 0 }} // yellow selection dot
                       />
                     )}
 
-                    <span>{letter}. {q.options[letter]}</span>
+                    <span style={{ color: "#c7c7c7" }}>{choice.label}</span>
                   </label>
                 );
               })}
@@ -1083,7 +1919,7 @@ export default function Home() {
             style={{
               marginTop: 8,
               padding: "12px 28px",
-              background: "#16a34a", // green
+              background: SUBMIT_GREEN,
               color: "white",
               fontWeight: "bold",
               border: "none",

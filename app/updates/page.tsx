@@ -1,11 +1,25 @@
 import Link from "next/link";
 
-export const metadata = { title: "Updates — EdForce" };
+export const metadata = { title: "Updates — Athenia" };
 
 // Newest first. Add a new entry at the top each release.
 const UPDATES = [
   {
+    version: "0.4",
+    date: "July 9",
+    items: [
+      "Rebrand from EdForce to Athenia",
+      "Paste a YouTube link to generate questions",
+      "Upload an audio or video file up to 25 MB to generate questions through audio transcription",
+      "UI overhaul for all users (new colors, fonts, and layout)",
+      "Complete UI overhaul for mobile accessibility",
+      "Sign-In with a Google Account (no use yet)",
+      "True/False question type",
+    ]
+  },
+  {
     version: "0.3",
+    date: "July 3",
     items: [
       "Generate quizzes from images (photos, diagrams, screenshots)",
       "Difficulty + grade/year settings that tailor the difficulty of questions",
@@ -16,6 +30,7 @@ const UPDATES = [
   },
   {
     version: "0.2",
+    date: "June 25",
     items: [
       "Optional instant feedback",
       "Choose how many questions to generate",
@@ -25,6 +40,7 @@ const UPDATES = [
   },
   {
     version: "0.1",
+    date: "June 24",
     items: ["Paste notes or a PDF to generate a 5 question multiple-choice quiz"]
   }
 ];
@@ -35,7 +51,7 @@ export default function UpdatesPage() {
       <div style={{ position: "relative" }}>
         <Link
           href="/"
-          aria-label="Back to EdForce"
+          aria-label="Back to Athenia"
           style={{
             position: "absolute",
             left: 0,
@@ -112,6 +128,16 @@ export default function UpdatesPage() {
               </li>
             ))}
           </ul>
+          <div
+            style={{
+              marginTop: 12,
+              textAlign: "right",
+              fontSize: 13,
+              color: "#888" // subtle, tucked in the bottom-right
+            }}
+          >
+            {u.date}
+          </div>
         </section>
       ))}
 
