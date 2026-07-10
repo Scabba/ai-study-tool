@@ -481,9 +481,8 @@ export default function Home() {
         supabase.storage.from("audio").remove([prev.path]); // clean up the old upload
       }
     } catch (e) {
-      const msg = (e as Error)?.message ?? "unknown error";
-      console.error("[audio upload] failed:", e);
-      setGenError("Couldn't upload that file: " + msg);
+      console.error("[audio upload] failed:", e); // detail stays in the dev console only
+      setGenError("Couldn't upload that file. Please try again.");
     } finally {
       setAudioUploading(false);
     }
