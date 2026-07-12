@@ -4,10 +4,10 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// The model used for question generation. Set GENERATION_MODEL in the env to
-// switch (e.g. "gpt-5.4-mini"); falls back to gpt-4o-mini if it's not set.
-// (Audio transcription still uses whisper-1 — that's separate, below.)
-const GEN_MODEL = process.env.GENERATION_MODEL ?? "gpt-4o-mini";
+// The model used for question generation. Override with GENERATION_MODEL in the
+// env; defaults to gpt-5.4-mini (the key no longer has gpt-4o-mini access, so
+// that can't be the fallback). Audio transcription still uses whisper-1, below.
+const GEN_MODEL = process.env.GENERATION_MODEL ?? "gpt-5.4-mini";
 
 type Q = {
   question: string;
