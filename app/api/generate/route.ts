@@ -4,6 +4,11 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// The model used for question generation. Set GENERATION_MODEL in the env to
+// switch (e.g. "gpt-5.4-mini"); falls back to gpt-4o-mini if it's not set.
+// (Audio transcription still uses whisper-1 — that's separate, below.)
+const GEN_MODEL = process.env.GENERATION_MODEL ?? "gpt-4o-mini";
+
 type Q = {
   question: string;
   options: { A: string; B: string; C: string; D: string };
@@ -12,6 +17,45 @@ type Q = {
 };
 
 const order: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
+
+// System prompts (shared across the generator calls below)
+const SYS_MC =
+  "You generate multiple-choice study questions from notes. " +
+  "You always respond with valid JSON only, no extra text.";
+const SYS_TF =
+  "You generate true/false study statements from notes. " +
+  "You always respond with valid JSON only, no extra text.";
+
+// The "don't repeat these" note appended to a prompt when we already have some
+// questions and are topping up. `noun` matches the wording each caller expects.
+const avoidNote = (avoid: string[], noun = "questions"): string =>
+  avoid.length
+    ? `\n\nDo NOT repeat or rephrase any of these existing ${noun}:\n- ${avoid.join(
+        "\n- "
+      )}`
+    : "";
+
+// Aim the questions at the student's education level.
+const levelNote = (level: string, noun = "questions"): string =>
+  level
+    ? `\n- Write the ${noun} for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
+    : "";
+
+// The two MC-specific rules every question prompt shares: distinct options and
+// a pair of tempting look-alike answers (the way a real MC test is written).
+const MC_OPTION_RULES =
+  "- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.\n" +
+  "- Exactly ONE option may be defensibly correct; the other three must each be clearly and unambiguously WRONG. NEVER write a question where two or more options could reasonably be argued correct — if you can't find three cleanly-wrong distractors, ask a different question.\n" +
+  "- Make ONE distractor closely resemble the correct answer — a tempting near-miss (similar wording or an easily-confused concept), the way a well-written test does — but it must still be genuinely incorrect, not a second valid answer.\n" +
+  "- Prefer positively-phrased questions. Only use \"NOT\"/\"EXCEPT\" wording when exactly three of the options are unmistakably true of the subject and just one is the genuine exception; otherwise ask the question the positive way.";
+
+// Pull the questions array out of a chat completion, defaulting to [] on anything odd.
+function parseQuestions<T>(
+  response: OpenAI.Chat.Completions.ChatCompletion
+): T[] {
+  const parsed = JSON.parse(response.choices[0].message.content ?? "{}");
+  return Array.isArray(parsed.questions) ? parsed.questions : [];
+}
 
 // A question is only usable if its 4 options are distinct & non-empty and the
 // answer points at one of A/B/C/D
@@ -59,38 +103,20 @@ async function makeQuestions(
   avoid: string[],
   level: string
 ): Promise<Q[]> {
-  const avoidNote = avoid.length
-    ? `\n\nDo NOT repeat or rephrase any of these existing questions:\n- ${avoid.join(
-        "\n- "
-      )}`
-    : "";
-
-  // Aim the questions at the student's education level
-  const levelNote = level
-    ? `\n- Write the questions for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
-    : "";
-
   const response = await client.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: GEN_MODEL,
     response_format: { type: "json_object" }, // force valid JSON
     messages: [
-      {
-        role: "system",
-        content:
-          "You generate multiple-choice study questions from notes. " +
-          "You always respond with valid JSON only, no extra text."
-      },
+      { role: "system", content: SYS_MC },
       {
         role: "user",
         content: `Create exactly ${count} multiple-choice questions based on the notes below.
 
 Rules:
 - The "questions" array MUST contain exactly ${count} items. ONLY as a last resort — when it is genuinely IMPOSSIBLE to make even one relevant question because the notes are empty, pure gibberish, random characters, or a single meaningless word — return {"questions": []} instead. If the notes contain ANY real topic or subject at all, always make the questions. When in doubt, make the questions.
-- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
-- Exactly one option is correct, and no other option may be equal or equivalent to it.
+${MC_OPTION_RULES}
 - Draw questions from ACROSS all of the notes (beginning, middle, and end) — never only the opening.
-- Use a mix of easy, medium, and hard, and label each one.
-- Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${levelNote}${avoidNote}
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level)}${avoidNote(avoid)}
 
 Return JSON in exactly this shape:
 {
@@ -110,9 +136,7 @@ ${text}`
     ]
   });
 
-  const output = response.choices[0].message.content ?? "{}";
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed.questions) ? parsed.questions : [];
+  return parseQuestions<Q>(response);
 }
 
 // Make exactly one question per section, so questions cover the whole document
@@ -122,29 +146,15 @@ async function makeQuestionsPerSection(
   level: string
 ): Promise<Q[]> {
   const count = sections.length;
-  const avoidNote = avoid.length
-    ? `\n\nDo NOT repeat or rephrase any of these existing questions:\n- ${avoid.join(
-        "\n- "
-      )}`
-    : "";
-  const levelNote = level
-    ? `\n- Write the questions for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
-    : "";
-
   const notesBlock = sections
     .map((s, i) => `[Section ${i + 1}]\n${s}`)
     .join("\n\n");
 
   const response = await client.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: GEN_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content:
-          "You generate multiple-choice study questions from notes. " +
-          "You always respond with valid JSON only, no extra text."
-      },
+      { role: "system", content: SYS_MC },
       {
         role: "user",
         content: `Create exactly ${count} multiple-choice questions from the notes below, which are divided into ${count} sections.
@@ -153,10 +163,8 @@ Rules:
 - ONLY as a last resort — when it is genuinely IMPOSSIBLE to make even one relevant question because the notes are empty, pure gibberish, or random characters — return {"questions": []} instead. If the notes contain ANY real topic or subject at all, always make the questions.
 - The "questions" array MUST contain exactly ${count} items: exactly ONE question per section (question 1 from [Section 1], question 2 from [Section 2], and so on). This ensures the whole document is covered, not just the beginning.
 - The sections are ONLY there to spread coverage. NEVER mention "section", a section number, or that the notes were divided. Each question must read as a standalone question about the material — the student never sees the sections.
-- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
-- Exactly one option is correct, and no other option may be equal or equivalent to it.
-- Use a mix of easy, medium, and hard, and label each one.
-- Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${levelNote}${avoidNote}
+${MC_OPTION_RULES}
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level)}${avoidNote(avoid)}
 
 Return JSON in exactly this shape:
 {
@@ -176,9 +184,7 @@ ${notesBlock}`
     ]
   });
 
-  const output = response.choices[0].message.content ?? "{}";
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed.questions) ? parsed.questions : [];
+  return parseQuestions<Q>(response);
 }
 
 // Make questions by having the AI read one or more uploaded images.
@@ -192,14 +198,6 @@ async function makeQuestionsFromImages(
   imageNumber?: number,
   totalImages?: number
 ): Promise<Q[]> {
-  const avoidNote = avoid.length
-    ? `\n\nDo NOT repeat or rephrase any of these existing questions:\n- ${avoid.join(
-        "\n- "
-      )}`
-    : "";
-  const levelNote = level
-    ? `\n- Write the questions for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
-    : "";
   // When there are several uploaded images, tell the student which one each question is about
   const labelNote =
     totalImages && totalImages > 1 && imageNumber
@@ -225,10 +223,8 @@ Rules:
   }
 - Base the questions on what is actually shown; don't invent unrelated facts.
 - Do NOT ask questions whose answer depends on counting many small or repeated items (fingers, dots, tally marks, objects in a pile) — you often miscount these. Only ask about a count when it is small and unmistakable.
-- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.
-- Exactly one option is correct, and no other option may be equal or equivalent to it.
-- Use a mix of easy, medium, and hard, and label each one.
-- Spread the correct answers EVENLY across A, B, C and D. Do NOT cluster them on B or C.${labelNote}${levelNote}${avoidNote}
+${MC_OPTION_RULES}
+- Use a mix of easy, medium, and hard, and label each one.${labelNote}${levelNote(level)}${avoidNote(avoid)}
 
 Return JSON in exactly this shape:
 {
@@ -250,22 +246,15 @@ Return JSON in exactly this shape:
   ];
 
   const response = await client.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: GEN_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content:
-          "You generate multiple-choice study questions from notes. " +
-          "You always respond with valid JSON only, no extra text."
-      },
+      { role: "system", content: SYS_MC },
       { role: "user", content }
     ]
   });
 
-  const output = response.choices[0].message.content ?? "{}";
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed.questions) ? parsed.questions : [];
+  return parseQuestions<Q>(response);
 }
 
 // Ask the model for `count` true/false statements from the notes.
@@ -275,25 +264,11 @@ async function makeTrueFalse(
   avoid: string[],
   level: string
 ): Promise<TFQ[]> {
-  const avoidNote = avoid.length
-    ? `\n\nDo NOT repeat or rephrase any of these existing questions/statements:\n- ${avoid.join(
-        "\n- "
-      )}`
-    : "";
-  const levelNote = level
-    ? `\n- Write the statements for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
-    : "";
-
   const response = await client.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: GEN_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content:
-          "You generate true/false study statements from notes. " +
-          "You always respond with valid JSON only, no extra text."
-      },
+      { role: "system", content: SYS_TF },
       {
         role: "user",
         content: `Create exactly ${count} true/false statements based on the notes below.
@@ -304,7 +279,7 @@ Rules:
 - Make roughly HALF of them true and half false — do NOT make them all true.
 - The "answer" is exactly "True" or "False".
 - Draw statements from ACROSS all of the notes (beginning, middle, and end) — never only the opening.
-- Use a mix of easy, medium, and hard, and label each one.${levelNote}${avoidNote}
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level, "statements")}${avoidNote(avoid, "questions/statements")}
 
 Return JSON in exactly this shape:
 {
@@ -323,9 +298,7 @@ ${text}`
     ]
   });
 
-  const output = response.choices[0].message.content ?? "{}";
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed.questions) ? parsed.questions : [];
+  return parseQuestions<TFQ>(response);
 }
 
 // Ask the model for `count` true/false statements by reading the uploaded images.
@@ -335,14 +308,6 @@ async function makeTrueFalseFromImages(
   avoid: string[],
   level: string
 ): Promise<TFQ[]> {
-  const avoidNote = avoid.length
-    ? `\n\nDo NOT repeat or rephrase any of these existing questions/statements:\n- ${avoid.join(
-        "\n- "
-      )}`
-    : "";
-  const levelNote = level
-    ? `\n- Write the statements for a ${level} student: match the vocabulary, depth, and reasoning expected at that level.`
-    : "";
   const many = images.length > 1;
 
   const prompt = `Create exactly ${count} true/false study statements based on the attached image${
@@ -365,7 +330,7 @@ Rules:
 - Make roughly HALF of them true and half false — do NOT make them all true.
 - The "answer" is exactly "True" or "False".
 - Do NOT write statements whose truth depends on counting many small or repeated items — you often miscount these.
-- Use a mix of easy, medium, and hard, and label each one.${levelNote}${avoidNote}
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level, "statements")}${avoidNote(avoid, "questions/statements")}
 
 Return JSON in exactly this shape:
 {
@@ -386,22 +351,15 @@ Return JSON in exactly this shape:
   ];
 
   const response = await client.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: GEN_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content:
-          "You generate true/false study statements from notes. " +
-          "You always respond with valid JSON only, no extra text."
-      },
+      { role: "system", content: SYS_TF },
       { role: "user", content }
     ]
   });
 
-  const output = response.choices[0].message.content ?? "{}";
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed.questions) ? parsed.questions : [];
+  return parseQuestions<TFQ>(response);
 }
 
 // Pick a file extension Whisper accepts, preferring the real filename's
@@ -519,6 +477,99 @@ async function fetchYoutubeCaptions(url: string): Promise<string> {
   return grab();
 }
 
+// Deterministically spread the correct answer across A/B/C/D. Models cluster
+// answers on B/C no matter what the prompt says, so we deal target positions
+// from a shuffled bag (refilled when empty) — every four questions hit each of
+// A/B/C/D exactly once — and shuffle the distractors so their order isn't tied
+// to the model. Returns a stateful function; create one per stream.
+function createAnswerBalancer() {
+  const letters = ["A", "B", "C", "D"] as const;
+  let bag: string[] = [];
+  return (q: Q): Q => {
+    if (bag.length === 0) bag = [...letters].sort(() => Math.random() - 0.5);
+    const target = bag.pop()!;
+    const correct = q.options[q.answer as (typeof letters)[number]];
+    const distractors = letters
+      .filter((l) => l !== q.answer)
+      .map((l) => q.options[l])
+      .sort(() => Math.random() - 0.5);
+    let d = 0;
+    const options = { A: "", B: "", C: "", D: "" };
+    for (const l of letters) options[l] = l === target ? correct : distractors[d++];
+    return { ...q, options, answer: target };
+  };
+}
+
+// Rechallenge: given the questions a student answered wrong, make `count` NEW
+// multiple-choice questions that test the SAME concepts (from a fresh angle, not
+// reworded copies) so they can practise and master what they missed.
+async function makeSimilarQuestions(
+  wrong: {
+    question: string;
+    answer: string;
+    options?: { A: string; B: string; C: string; D: string };
+  }[],
+  count: number,
+  level: string
+): Promise<Q[]> {
+  const missed = wrong
+    .map((w, i) => {
+      const correct =
+        w.options && ["A", "B", "C", "D"].includes(w.answer)
+          ? w.options[w.answer as "A" | "B" | "C" | "D"]
+          : w.answer;
+      return `${i + 1}. ${w.question} (correct answer: ${correct})`;
+    })
+    .join("\n");
+
+  const response = await client.chat.completions.create({
+    model: GEN_MODEL,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYS_MC },
+      {
+        role: "user",
+        content: `A student answered the questions below INCORRECTLY. Create exactly ${count} NEW multiple-choice questions that test the SAME underlying concepts and topics, so the student can practise and master what they missed.
+
+Rules:
+- The "questions" array MUST contain exactly ${count} items.
+- Cover the same concepts as the missed questions, spread as evenly as possible across them — but do NOT copy or merely reword them. Approach each concept from a fresh angle so the student learns the idea, not one specific question.
+${MC_OPTION_RULES}
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level)}
+
+The questions the student got wrong:
+${missed}
+
+Return JSON in exactly this shape:
+{
+  "questions": [
+    {
+      "question": "the question text",
+      "options": { "A": "...", "B": "...", "C": "...", "D": "..." },
+      "answer": "A",
+      "difficulty": "easy"
+    }
+  ]
+}`
+      }
+    ]
+  });
+
+  return parseQuestions<Q>(response);
+}
+
+// Every response on this route is newline-delimited JSON (one item per line).
+const NDJSON_HEADERS = {
+  "Content-Type": "application/x-ndjson; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform"
+};
+
+// A single-line NDJSON error response (used before the stream starts).
+const ndjsonError = (message: string) =>
+  new Response(JSON.stringify({ error: message }) + "\n", {
+    headers: NDJSON_HEADERS
+  });
+
 export async function POST(req: Request) {
   const body = await req.json();
   let text = typeof body.text === "string" ? body.text : "";
@@ -536,7 +587,7 @@ export async function POST(req: Request) {
       : typeof body.image === "string" && body.image.startsWith("data:image/")
         ? [body.image]
         : []
-  ).slice(0, 10); // never process more than 10 images
+  ).slice(0, 5); // never process more than 5 images
   const level = typeof body.level === "string" ? body.level : "";
 
   // Only allow 0/5/10/15/20, default to 5
@@ -545,6 +596,60 @@ export async function POST(req: Request) {
 
   // True/False count: 0/5/10/15/20, default 0 (none)
   const tfCount = allowed.includes(body.tfCount) ? body.tfCount : 0;
+
+  // Rechallenge: the questions the student got wrong, if this is a rechallenge run.
+  type WrongQ = {
+    question: string;
+    answer: string;
+    options?: { A: string; B: string; C: string; D: string };
+  };
+  const similarTo: WrongQ[] = Array.isArray(body.similarTo)
+    ? (body.similarTo as WrongQ[]).filter(
+        (w): w is WrongQ =>
+          !!w && typeof w.question === "string" && typeof w.answer === "string"
+      )
+    : [];
+
+  // Rechallenge mode: build fresh questions on the concepts the student missed.
+  // The count is 2× their wrong answers, so it isn't limited to the 0/5/10/15/20
+  // set — clamp it to 1–10 instead (10 is the rechallenge cap).
+  if (similarTo.length > 0) {
+    const rcCount = Math.max(1, Math.min(10, Math.floor(Number(body.count) || 0)));
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const seen = new Set<string>();
+        let sent = 0;
+        const rebalance = createAnswerBalancer();
+        const send = (q: Q) => {
+          const key = q.question?.trim().toLowerCase();
+          if (!key || seen.has(key) || sent >= rcCount) return;
+          if (!isValidQuestion(q)) return;
+          seen.add(key);
+          sent++;
+          controller.enqueue(encoder.encode(JSON.stringify(rebalance(q)) + "\n"));
+        };
+
+        let attempts = 0;
+        while (sent < rcCount && attempts < 3) {
+          const batch = await makeSimilarQuestions(similarTo, rcCount - sent, level);
+          if (batch.length === 0) break;
+          for (const q of batch) send(q); // send() skips dupes + overflow itself
+          attempts++;
+        }
+
+        if (sent === 0) {
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({ error: "We couldn't build a rechallenge. Try again." }) + "\n"
+            )
+          );
+        }
+        controller.close();
+      }
+    });
+    return new Response(stream, { headers: NDJSON_HEADERS });
+  }
 
   // Audio/video: fetch the uploaded file and transcribe it, then use the transcript.
   if (audioUrl) {
@@ -561,13 +666,8 @@ export async function POST(req: Request) {
     if (audioFailed || !text) {
       const message = audioFailed
         ? "We couldn't transcribe that file. Try a different audio or video format."
-        : "We couldn't find any speech in that file to make questions from.";
-      return new Response(JSON.stringify({ error: message }) + "\n", {
-        headers: {
-          "Content-Type": "application/x-ndjson; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform"
-        }
-      });
+        : "We couldn't find any speech in that file to generate questions from.";
+      return ndjsonError(message);
     }
   }
 
@@ -582,13 +682,9 @@ export async function POST(req: Request) {
     }
 
     if (ytFailed || !text) {
-      const message = "We couldn't make a quiz from that video. Try a different one.";
-      return new Response(JSON.stringify({ error: message }) + "\n", {
-        headers: {
-          "Content-Type": "application/x-ndjson; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform"
-        }
-      });
+      return ndjsonError(
+        "We couldn't make a quiz from that video. Try a different one."
+      );
     }
   }
 
@@ -620,6 +716,8 @@ export async function POST(req: Request) {
               }
             };
 
+      const rebalance = createAnswerBalancer();
+
       // Send one question down the stream (skipping duplicates / extras)
       const send = (q: Q) => {
         const key = q.question?.trim().toLowerCase();
@@ -628,7 +726,9 @@ export async function POST(req: Request) {
         seen.add(key);
         sentTexts.push(q.question);
         sent++;
-        controller.enqueue(encoder.encode(JSON.stringify(cleanOptions(q)) + "\n"));
+        controller.enqueue(
+          encoder.encode(JSON.stringify(cleanOptions(rebalance(q))) + "\n")
+        );
       };
 
       const sortByDifficulty = (batch: Q[]) =>
@@ -828,10 +928,5 @@ export async function POST(req: Request) {
     }
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform"
-    }
-  });
+  return new Response(stream, { headers: NDJSON_HEADERS });
 }

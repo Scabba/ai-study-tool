@@ -1,10 +1,18 @@
 "use client";
 
-import { useState, useEffect, useRef, useSyncExternalStore } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useSyncExternalStore,
+  Fragment,
+  type DragEvent
+} from "react";
 import Link from "next/link";
 import WhatsNew from "./WhatsNew";
 import AuthButton from "./components/AuthButton";
 import { createClient } from "@/lib/supabase/client";
+import { fetchSettings, saveSettings, type Settings } from "@/lib/userSettings";
 
 // A multiple-choice question coming back from the server
 type MCQuestion = {
@@ -13,6 +21,7 @@ type MCQuestion = {
   options: { A: string; B: string; C: string; D: string };
   answer: string;
   difficulty: string;
+  round?: number; // 0 = original quiz, 1+ = rechallenge extension rounds
 };
 
 // A true/false question — a statement the user judges "True" or "False"
@@ -21,12 +30,13 @@ type TFQuestion = {
   question: string;
   answer: "True" | "False";
   difficulty: string;
+  round?: number; // 0 = original quiz, 1+ = rechallenge extension rounds
 };
 
 type Question = MCQuestion | TFQuestion;
 
 // Most photos you can upload at once
-const MAX_IMAGES = 10;
+const MAX_IMAGES = 5;
 
 // Difficulty slider stops (index 0 -> 2)
 const DIFFICULTIES = ["Middle School", "High School", "University"];
@@ -45,6 +55,40 @@ function useIsMobile(breakpoint = 640) {
   );
 }
 
+// Upload a file to the Supabase Storage `audio` bucket via XMLHttpRequest, so we
+// can report real byte-level progress (the Supabase JS client uploads with
+// fetch, which gives no progress events). The bucket allows anon inserts, so the
+// public anon key is enough. Calls onProgress(0..100) as bytes go out.
+function uploadAudioWithProgress(
+  file: File,
+  path: string,
+  onProgress: (percent: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!base || !key) {
+      reject(new Error("Supabase env vars are not set"));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${base}/storage/v1/object/audio/${path}`);
+    xhr.setRequestHeader("apikey", key);
+    xhr.setRequestHeader("Authorization", `Bearer ${key}`);
+    xhr.setRequestHeader("x-upsert", "false");
+    if (file.type) xhr.setRequestHeader("Content-Type", file.type);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`upload failed: ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("network error during upload"));
+    xhr.send(file);
+  });
+}
+
 // Muted slate accent for selected tabs / the Generate button — matches the
 // "NEW" badge on the Updates page instead of the old bright blue.
 const ACCENT_BG = "rgba(148, 163, 184, 0.18)";
@@ -57,6 +101,11 @@ const ACCENT_TEXT = "#cbd5e1";
 const CORRECT_GREEN = "#57b98a";
 const WRONG_RED = "#e0776b";
 const SUBMIT_GREEN = "#3f9169";
+// Rechallenge (extension-round) theme: yellow instead of green. Muted gold to
+// match the understated palette. YELLOW for titles/outline, BTN for the filled
+// Submit / grade box.
+const RECHALLENGE_YELLOW = "#d9b45a";
+const RECHALLENGE_BTN = "#c79a34";
 
 // Whether Supabase auth is wired up (keys present in the browser bundle)
 const SUPABASE_CONFIGURED =
@@ -92,19 +141,26 @@ export default function Home() {
     { name: string; previewUrl: string; remoteUrl: string; path: string; isVideo: boolean }[]
   >([]);
   const [audioUploading, setAudioUploading] = useState(false); // is a file uploading to Storage?
+  const [audioProgress, setAudioProgress] = useState(0); // upload progress 0–100 for the loading bar
   const [youtubeUrl, setYoutubeUrl] = useState(""); // pasted YouTube link on the audio page
   const [showYoutube, setShowYoutube] = useState(false); // is the YouTube link box open?
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // the mobile hamburger menu
   const [accountMenuOpen, setAccountMenuOpen] = useState(false); // account dropdown under the "?"
   const [authEmail, setAuthEmail] = useState<string | null>(null); // signed-in user's email, if any
   const [authAvatar, setAuthAvatar] = useState<string | null>(null); // signed-in user's photo, if any
+  const [authUserId, setAuthUserId] = useState<string | null>(null); // signed-in user's id (for account-wide settings)
   const [authClient] = useState(() => (SUPABASE_CONFIGURED ? createClient() : null));
   const isMobile = useIsMobile();
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
+  const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null); // video shown fullscreen
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<number, string>>({}); // which letter the user picked per question
   const [loading, setLoading] = useState(false);
-  const [submitted, setSubmitted] = useState(false); // has the user pressed Submit?
+  // How many rounds have been graded. Round 0 is the original quiz; each
+  // Rechallenge adds another round. A question in round r is graded once
+  // r < submittedRounds. (Replaces the old single `submitted` boolean.)
+  const [submittedRounds, setSubmittedRounds] = useState(0);
+  const [rechallengeLoading, setRechallengeLoading] = useState(false); // a rechallenge round is streaming in
   const [instantFeedback, setInstantFeedback] = useState(false); // reveal right/wrong as you answer
   const [toggleError, setToggleError] = useState<string | null>(null); // shown if you try to change instant feedback mid-quiz
   const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
@@ -112,11 +168,13 @@ export default function Home() {
   const [tfAmount, setTfAmount] = useState(0); // how many true/false questions (0 = none)
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
+  const [dragging, setDragging] = useState(false); // a file is being dragged over the text box
   const [difficulty, setDifficulty] = useState(1); // 0=Middle School, 1=High School, 2=University
   const [gradeYear, setGradeYear] = useState<string | null>(null); // chosen grade/year within the difficulty
   const [dotCount, setDotCount] = useState(3); // for the animated "paste text here..." dots
   const [flashIndex, setFlashIndex] = useState<number | null>(null); // which question to flash as "missing"
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden PDF file picker
+  const dragDepth = useRef(0); // enter/leave counter so the drag highlight doesn't flicker over children
   const imageInputRef = useRef<HTMLInputElement>(null); // hidden image file picker
   const audioInputRef = useRef<HTMLInputElement>(null); // hidden audio/video file picker
   const noticeRef = useRef<HTMLDivElement>(null); // the pre-release notice box
@@ -126,6 +184,15 @@ export default function Home() {
   const mobileMenuRef = useRef<HTMLDivElement>(null); // the mobile hamburger + its dropdown
   const accountMenuRef = useRef<HTMLDivElement>(null); // the mobile account button + its dropdown
   const skipFirstSave = useRef(true); // don't save settings on the very first render
+  const cloudReady = useRef(false); // true once we've loaded (or migrated) this user's cloud settings
+  const cloudSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // debounces cloud writes
+  const latestSettings = useRef<Settings>({
+    difficulty: 1,
+    gradeYear: null,
+    instantFeedback: false,
+    amount: 5,
+    tfAmount: 0
+  }); // always holds the current settings (used to seed a brand-new account)
   const genAbortRef = useRef<AbortController | null>(null); // cancels an in-flight generation
 
   // Close the mobile hamburger menu when you tap outside it
@@ -156,8 +223,11 @@ export default function Home() {
   useEffect(() => {
     if (!authClient) return;
     let active = true;
-    const apply = (user: { email?: string; user_metadata?: Record<string, unknown> } | null) => {
+    const apply = (
+      user: { id?: string; email?: string; user_metadata?: Record<string, unknown> } | null
+    ) => {
       setAuthEmail(user?.email ?? null);
+      setAuthUserId(user?.id ?? null);
       const meta = user?.user_metadata ?? {};
       setAuthAvatar(
         (meta.avatar_url as string) ?? (meta.picture as string) ?? null
@@ -240,27 +310,67 @@ export default function Home() {
   }, []);
 
   // Save settings whenever they change (skipping the first render, which runs
-  // before the saved values have loaded — so we don't overwrite them)
+  // before the saved values have loaded — so we don't overwrite them). Signed-in
+  // users also get the change mirrored to their account so it follows them across
+  // devices; signed-out users just use localStorage as before.
   useEffect(() => {
+    const current = { difficulty, gradeYear, instantFeedback, amount, tfAmount };
+    latestSettings.current = current;
     if (skipFirstSave.current) {
       skipFirstSave.current = false;
       return;
     }
     try {
-      localStorage.setItem(
-        "edforceSettings",
-        JSON.stringify({ difficulty, gradeYear, instantFeedback, amount, tfAmount })
-      );
+      localStorage.setItem("edforceSettings", JSON.stringify(current));
     } catch {
       // storage might be unavailable — not critical
     }
-  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount]);
+    // Push to the account, but only once we've loaded their cloud settings (so a
+    // stale local value can't overwrite the cloud during login). Debounced so
+    // dragging the difficulty slider doesn't fire a write per step.
+    if (authClient && authUserId && cloudReady.current) {
+      if (cloudSaveTimer.current) clearTimeout(cloudSaveTimer.current);
+      cloudSaveTimer.current = setTimeout(() => {
+        saveSettings(authClient, authUserId, current);
+      }, 500);
+    }
+  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount, authClient, authUserId]);
+
+  // When a user signs in, load their account-wide settings — the cloud copy wins
+  // across devices. If they have no saved row yet, seed it from whatever's set
+  // right now (migrating this device's local settings up so nothing is lost).
+  useEffect(() => {
+    cloudReady.current = false;
+    if (!authClient || !authUserId) return;
+    let active = true;
+    (async () => {
+      const cloud = await fetchSettings(authClient, authUserId);
+      if (!active) return;
+      if (cloud) {
+        setDifficulty(cloud.difficulty);
+        setGradeYear(cloud.gradeYear);
+        setInstantFeedback(cloud.instantFeedback);
+        setAmount(cloud.amount);
+        setTfAmount(cloud.tfAmount);
+      } else {
+        await saveSettings(authClient, authUserId, latestSettings.current);
+      }
+      if (active) cloudReady.current = true;
+    })();
+    return () => {
+      active = false;
+    };
+  }, [authClient, authUserId]);
 
   const placeholder = "paste text here" + ".".repeat(dotCount);
 
   function handleSubmit() {
-    // Find the first question that hasn't been answered yet
-    const missing = questions.findIndex((_, i) => !answers[i]);
+    // Grade the current (not-yet-graded) round only. Find the first UNANSWERED
+    // question within that round.
+    const activeRound = submittedRounds;
+    const missing = questions.findIndex(
+      (q, i) => (q.round ?? 0) === activeRound && !answers[i]
+    );
 
     if (missing !== -1) {
       // Scroll that question to the middle of the screen...
@@ -270,24 +380,18 @@ export default function Home() {
       // ...and flash it yellow for three seconds
       setFlashIndex(missing);
       setTimeout(() => setFlashIndex(null), 3000);
-      return; // stop here — don't grade an incomplete quiz
+      return; // stop here — don't grade an incomplete round
     }
 
-    setSubmitted(true);   // everything answered -> grade it
+    setSubmittedRounds(activeRound + 1); // this round is now graded
     setToggleError(null); // toggle is usable again now that it's submitted
   }
 
-  // Once at least one answer is picked, the instant-feedback toggle is locked
-  const hasAnswered = Object.keys(answers).length > 0;
-
-  // How many did they get right, and that as a percentage
-  const score = questions.reduce(
-    (total, q, i) => total + (answers[i] === q.answer ? 1 : 0),
-    0
+  // The instant-feedback toggle is locked while the active (ungraded) round has
+  // any answer in it — so you can't flip it to peek mid-round.
+  const activeRoundAnswered = questions.some(
+    (q, i) => (q.round ?? 0) === submittedRounds && answers[i] != null
   );
-  const percent = questions.length
-    ? Math.round((score / questions.length) * 100)
-    : 0;
 
   // Turn the difficulty + grade settings into a phrase the AI can target,
   // e.g. "grade 8 (middle school)" or "graduate-level (university)"
@@ -302,6 +406,41 @@ export default function Home() {
     return `grade ${gradeYear} (${school.toLowerCase()})`;
   }
 
+  // Read the NDJSON stream the server sends (one question per line, or an
+  // {error} line). Calls onItem for each question as it arrives.
+  async function readQuestionStream(
+    res: Response,
+    signal: AbortSignal,
+    onItem: (item: Question) => void | Promise<void>
+  ) {
+    if (!res.body) return;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const handleLine = async (line: string) => {
+      if (signal.aborted) return; // page was switched — drop it
+      const item = JSON.parse(line);
+      if (item.error) {
+        setGenError(item.error); // the server told us what went wrong
+        return;
+      }
+      await onItem(item as Question);
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // the last piece might be a half-finished line
+      for (const line of lines) {
+        if (line.trim()) await handleLine(line);
+      }
+    }
+    if (buffer.trim()) await handleLine(buffer);
+  }
+
   // Core generation: send a payload (text OR image) and stream questions in
   async function runGeneration(payload: {
     text?: string;
@@ -311,19 +450,19 @@ export default function Home() {
     youtube?: string;
   }) {
     if (!gradeYear) {
-      setGenError("Choose grade level in settings to generate questions (top left)");
+      setGenError("Choose grade level in settings to generate questions");
       return;
     }
     if (amount === 0 && tfAmount === 0) {
-      setGenError("Please choose a question amount larger than zero to generate.");
+      setGenError("Choose a question amount larger than zero to generate");
       return;
     }
     setGenError(null);
-    setLoading(true);    // turn the dots ON before we start
-    setQuestions([]);    // clear the old quiz right away
-    setAnswers({});      // clear any previous selections
-    setSubmitted(false); // back to "not submitted yet"
-    setToggleError(null); // fresh quiz -> toggle is usable again
+    setLoading(true);       // turn the dots ON before we start
+    setQuestions([]);       // clear the old quiz right away
+    setAnswers({});         // clear any previous selections
+    setSubmittedRounds(0);  // back to "nothing graded yet"
+    setToggleError(null);   // fresh quiz -> toggle is usable again
 
     // A fresh controller for this run, so switching pages can cancel it
     const controller = new AbortController();
@@ -339,39 +478,11 @@ export default function Home() {
         signal: controller.signal
       });
 
-      if (!res.body) return;
-
-      // The server sends one JSON line per question as each is ready (or an
-      // {error} line if something went wrong). Read them as they stream in.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      const handleLine = async (line: string) => {
-        if (controller.signal.aborted) return; // page was switched — drop it
-        const item = JSON.parse(line);
-        if (item.error) {
-          setGenError(item.error); // the server told us what went wrong
-          return;
-        }
-        setQuestions((prev) => [...prev, item as Question]);
-        await new Promise((r) => setTimeout(r, 250)); // gap so each pops up on its own
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // the last piece might be a half-finished line
-
-        for (const line of lines) {
-          if (line.trim()) await handleLine(line);
-        }
-      }
-
-      if (buffer.trim()) await handleLine(buffer);
+      // Original quiz -> everything is round 0. A small gap so each pops in.
+      await readQuestionStream(res, controller.signal, async (item) => {
+        setQuestions((prev) => [...prev, { ...item, round: 0 }]);
+        await new Promise((r) => setTimeout(r, 250));
+      });
     } catch (err) {
       // A page switch aborts the request on purpose — ignore that; re-throw real errors
       if ((err as Error)?.name !== "AbortError") throw err;
@@ -388,10 +499,58 @@ export default function Home() {
   // Generate from whatever text we pass in (defaults to the textarea's text)
   async function generateQuestions(sourceText: string = text) {
     if (!sourceText.trim()) {
-      setGenError("Please paste some notes first");
+      setGenError("Paste notes to generate questions");
       return;
     }
     await runGeneration({ text: sourceText });
+  }
+
+  // Rechallenge: take the questions the student got wrong in the round they just
+  // graded and append a new round of 2× that many fresh questions on the same
+  // concepts (tagged with the next round number, so they render as yellow).
+  async function runRechallenge() {
+    const justGraded = submittedRounds - 1; // the round we just submitted
+    const wrong = questions.filter(
+      (q, i) => (q.round ?? 0) === justGraded && answers[i] !== q.answer
+    );
+    if (wrong.length === 0) return;
+
+    const newRound = submittedRounds; // the next round
+    const count = Math.min(wrong.length * 2, 10); // 2× the misses, capped at 10
+
+    setGenError(null);
+    setRechallengeLoading(true);
+    const controller = new AbortController();
+    genAbortRef.current = controller;
+
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          similarTo: wrong.map((q) => ({
+            question: q.question,
+            answer: q.answer,
+            options: "options" in q ? q.options : undefined
+          })),
+          count,
+          level: describeLevel()
+        }),
+        signal: controller.signal
+      });
+
+      await readQuestionStream(res, controller.signal, async (item) => {
+        setQuestions((prev) => [...prev, { ...item, round: newRound }]);
+        await new Promise((r) => setTimeout(r, 250));
+      });
+    } catch (err) {
+      if ((err as Error)?.name !== "AbortError") throw err;
+    } finally {
+      if (genAbortRef.current === controller) {
+        genAbortRef.current = null;
+        setRechallengeLoading(false);
+      }
+    }
   }
 
   // Add one or more uploaded images to the list (doesn't generate yet)
@@ -414,13 +573,22 @@ export default function Home() {
             })
         )
       );
-      // Skip duplicates, and cap the total at MAX_IMAGES
-      const newOnes = dataUrls.filter((url) => !images.includes(url));
       const room = MAX_IMAGES - images.length;
       if (room <= 0) {
         setGenError(`You can only upload up to ${MAX_IMAGES} images.`);
         return;
       }
+      // Skip anything we already have AND any repeats within this same selection
+      // (mobile photo pickers let you tap the same photo more than once).
+      const seen = new Set(images);
+      const newOnes: string[] = [];
+      for (const url of dataUrls) {
+        if (!seen.has(url)) {
+          seen.add(url);
+          newOnes.push(url);
+        }
+      }
+      if (newOnes.length === 0) return; // everything picked was a duplicate
       if (newOnes.length > room) {
         setGenError(`You can only upload up to ${MAX_IMAGES} images.`);
       }
@@ -433,7 +601,7 @@ export default function Home() {
   // Generate a quiz from all the uploaded images
   async function generateFromImages() {
     if (images.length === 0) {
-      setGenError("Please upload at least one photo first");
+      setGenError("Upload at least one photo first");
       return;
     }
     await runGeneration({ images });
@@ -454,15 +622,14 @@ export default function Home() {
       return;
     }
     setGenError(null);
+    setAudioProgress(0);
     setAudioUploading(true);
     try {
       const supabase = createClient();
       const ext = file.name.includes(".") ? file.name.split(".").pop() : "dat";
       const path = `${crypto.randomUUID()}.${ext}`;
-      const { error } = await supabase.storage
-        .from("audio")
-        .upload(path, file, { contentType: file.type || undefined, upsert: false });
-      if (error) throw error;
+      // Upload via XHR so the loading bar reflects real upload progress.
+      await uploadAudioWithProgress(file, path, setAudioProgress);
       const { data: pub } = supabase.storage.from("audio").getPublicUrl(path);
 
       const prev = audioFiles[0]; // this file replaces any previous one
@@ -548,7 +715,7 @@ export default function Home() {
     setMode(m);
     setQuestions([]);
     setAnswers({});
-    setSubmitted(false);
+    setSubmittedRounds(0);
     setGenError(null);
     setToggleError(null);
     setImages([]);
@@ -596,7 +763,7 @@ export default function Home() {
   // Read an uploaded document (PDF, Word .docx, or plain text) and make a quiz
   async function handleFile(file: File) {
     if (!gradeYear) {
-      setGenError("Choose grade level in settings to generate questions (top left)");
+      setGenError("Choose grade level in settings to generate questions");
       return;
     }
     const name = file.name.toLowerCase();
@@ -638,6 +805,183 @@ export default function Home() {
     }
   }
 
+  // Drag-and-drop onto the text box. We only react to dragged FILES (not text
+  // selections), and count enter/leave so the highlight stays put as the cursor
+  // crosses the textarea and toolbar inside the box.
+  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes("Files");
+  const onDragEnter = (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth.current++;
+    setDragging(true);
+  };
+  const onDragLeave = (e: DragEvent) => {
+    if (!isFileDrag(e) || dragDepth.current === 0) return;
+    dragDepth.current--;
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  // A tiny numbered box standing in for one uploaded photo (used on mobile, to
+  // the sides of the upload box). Tapping it opens that photo fullscreen.
+  const renderThumb = (src: string, index: number, label: number) => (
+    <button
+      key={index}
+      type="button"
+      onClick={() => setFullscreenImage(src)}
+      title={`View image ${label}`}
+      style={{
+        position: "relative",
+        width: 44,
+        height: 44,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        background: "transparent",
+        border: "2px solid #888",
+        borderRadius: 3,
+        cursor: "pointer",
+        color: "inherit"
+      }}
+    >
+      {/* little picture glyph */}
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <circle cx="8.5" cy="9.5" r="1.5" />
+        <path d="M4 18 l5 -5 3 3 4 -4 4 4" />
+      </svg>
+      {/* its number */}
+      <span
+        style={{
+          position: "absolute",
+          bottom: -6,
+          right: -6,
+          minWidth: 16,
+          height: 16,
+          padding: "0 4px",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: 8,
+          background: ACCENT_BG_STRONG,
+          color: ACCENT_TEXT,
+          border: "1px solid #888",
+          fontSize: 10,
+          fontWeight: 700,
+          lineHeight: 1
+        }}
+      >
+        {label}
+      </span>
+    </button>
+  );
+
+  // The Submit / grade / Rechallenge controls shown at the end of one round.
+  const renderRoundControls = (r: number) => {
+    const roundTotal = questions.filter((q) => (q.round ?? 0) === r).length;
+    const roundScore = questions.reduce(
+      (t, q, i) => t + ((q.round ?? 0) === r && answers[i] === q.answer ? 1 : 0),
+      0
+    );
+    const graded = r < submittedRounds;
+    const isActive = r === submittedRounds;
+    const pct = roundTotal ? Math.round((roundScore / roundTotal) * 100) : 0;
+    const wrong = roundTotal - roundScore;
+    const maxRound = questions.reduce((m, q) => Math.max(m, q.round ?? 0), 0);
+    const yellow = r >= 1; // extension rounds use the yellow theme
+
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+          marginTop: 8,
+          marginBottom: 28
+        }}
+      >
+        {graded ? (
+          <span
+            style={{
+              padding: "12px 28px",
+              background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
+              color: yellow ? "#1a1a1a" : "white",
+              fontWeight: "bold",
+              borderRadius: 3,
+              fontSize: 20
+            }}
+          >
+            {roundScore}/{roundTotal} ({pct}%)
+          </span>
+        ) : isActive ? (
+          <button
+            onClick={handleSubmit}
+            disabled={rechallengeLoading || loading}
+            style={{
+              padding: "12px 28px",
+              background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
+              color: yellow ? "#1a1a1a" : "white",
+              fontWeight: "bold",
+              border: "none",
+              borderRadius: 3,
+              fontSize: 16,
+              cursor: "pointer"
+            }}
+          >
+            Submit
+          </button>
+        ) : null}
+
+        {/* Rechallenge: only on the newest round, once it's graded and has misses */}
+        {graded && r === maxRound && wrong > 0 && (
+          <button
+            onClick={() => runRechallenge()}
+            disabled={rechallengeLoading}
+            title={`Practise the ${wrong} you missed with ${wrong * 2} fresh questions`}
+            style={{
+              padding: "12px 24px",
+              background: "transparent",
+              color: RECHALLENGE_YELLOW,
+              border: `2px solid ${RECHALLENGE_BTN}`,
+              borderRadius: 3,
+              fontWeight: "bold",
+              fontSize: 16,
+              cursor: rechallengeLoading ? "default" : "pointer"
+            }}
+          >
+            {rechallengeLoading ? (
+              <span className="loading-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            ) : (
+              "Rechallenge"
+            )}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <main style={{ padding: 40 }}>
       <WhatsNew />
@@ -663,6 +1007,32 @@ export default function Home() {
             src={fullscreenImage}
             alt="Fullscreen"
             style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+          />
+        </div>
+      )}
+
+      {/* Fullscreen video viewer — click the backdrop to close */}
+      {fullscreenVideo && (
+        <div
+          onClick={() => setFullscreenVideo(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20,
+            cursor: "zoom-out"
+          }}
+        >
+          <video
+            src={fullscreenVideo}
+            controls
+            autoPlay
+            onClick={(e) => e.stopPropagation()} // clicks on the player shouldn't close it
+            style={{ maxWidth: "100%", maxHeight: "100%" }}
           />
         </div>
       )}
@@ -966,16 +1336,22 @@ export default function Home() {
           {/* Instant feedback on/off */}
           <div>
             <label
-              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+              style={{
+                display: "inline-flex", // only the box + text are clickable, not the whole row
+                width: "fit-content",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer"
+              }}
             >
               {/* the real checkbox, hidden — the label still toggles it */}
               <input
                 type="checkbox"
                 checked={instantFeedback}
                 onChange={(e) => {
-                  // Locked only DURING the quiz (answered but not yet submitted).
+                  // Locked only DURING a round (answered but not yet submitted).
                   // After submitting, answers are already locked, so it's free again.
-                  if (hasAnswered && !submitted) {
+                  if (activeRoundAnswered) {
                     setToggleError(
                       e.target.checked
                         ? "Cannot be enabled; Complete the questions"
@@ -1309,56 +1685,113 @@ export default function Home() {
         }}
       />
 
-      {/* "Add document" icon button: a square with a plus in its top-right corner */}
-      <button
-        onClick={() => fileInputRef.current?.click()}
-        title="Upload a document (PDF, Word, or text)"
+      {/* One box for all three ways to add material: click to upload, drag &
+          drop a file onto it, or just paste/type text in the area below. */}
+      <div
+        onDragEnter={onDragEnter}
+        onDragOver={(e) => {
+          if (isFileDrag(e)) e.preventDefault(); // required for the drop to fire
+        }}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
         style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 48,
-          height: 48,
-          marginBottom: 12,
-          background: "transparent",
-          border: "2px solid #888",
+          position: "relative",
+          width: "100%",
+          border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
-          cursor: "pointer",
-          color: "inherit"
+          transition: "border-color 0.15s"
         }}
       >
-        <svg
-          width="28"
-          height="28"
-          viewBox="0 0 32 32"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+        {/* Toolbar: the click-to-upload button plus a hint about the other ways */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+            padding: "8px 10px",
+            borderBottom: "1px solid #333"
+          }}
         >
-          {/* file/document with a folded top-right corner */}
-          <path d="M7 6 H17 L22 11 V26 H7 Z" />
-          <path d="M17 6 V11 H22" />
-          {/* plus sign floating just off the top-right corner */}
-          <line x1="27" y1="3.5" x2="27" y2="9.5" />
-          <line x1="24" y1="6.5" x2="30" y2="6.5" />
-        </svg>
-      </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Upload a document (PDF, Word, or text)"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 12px",
+              background: "transparent",
+              border: "1px solid #888",
+              borderRadius: 3,
+              cursor: "pointer",
+              color: "inherit",
+              fontSize: 14
+            }}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 32 32"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {/* up-arrow rising out of a tray = upload */}
+              <path d="M16 21 V7" />
+              <path d="M9 14 L16 7 L23 14" />
+              <path d="M6 24 H26" />
+            </svg>
+            Upload file
+          </button>
+          <span style={{ fontSize: 13, opacity: 0.55 }}>
+            {isMobile ? "PDF, Word, or text" : "or drag & drop — PDF, Word, or text"}
+          </span>
+        </div>
 
-      <textarea
-        style={{
-          width: "100%",
-          height: 200,
-          border: "2px solid #888",
-          borderRadius: 3,
-          padding: 12,
-          fontSize: 16
-        }}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={placeholder}
-      />
+        <textarea
+          style={{
+            display: "block",
+            width: "100%",
+            height: 200,
+            border: "none",
+            outline: "none",
+            resize: "vertical",
+            background: "transparent",
+            color: "inherit",
+            padding: 12,
+            fontSize: 16,
+            fontFamily: "inherit"
+          }}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={placeholder}
+        />
+
+        {/* Highlight overlay shown only while a file is dragged over the box */}
+        {dragging && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none", // let the drop pass through to the box
+              background: ACCENT_BG,
+              borderRadius: 3,
+              color: ACCENT_TEXT,
+              fontSize: 16,
+              fontWeight: 500
+            }}
+          >
+            Drop your file to upload
+          </div>
+        )}
+      </div>
 
       <br />
 
@@ -1401,8 +1834,18 @@ export default function Home() {
 
       {/* Image page: previews fill the left, upload controls stay centered */}
       {mode === "image" && (
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginTop: 20 }}>
-          {/* Left column: uploaded image previews, tiled to fill the space */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: isMobile ? "column" : "row",
+            alignItems: isMobile ? "center" : "flex-start",
+            gap: 24,
+            marginTop: 20
+          }}
+        >
+          {/* Left column: uploaded image previews (desktop only; on mobile a
+              count badge on the upload box stands in for the thumbnails) */}
+          {!isMobile && (
           <div
             style={{
               flex: 1,
@@ -1459,6 +1902,7 @@ export default function Home() {
               </div>
             ))}
           </div>
+          )}
 
           {/* Center column: upload controls */}
           <div
@@ -1522,9 +1966,46 @@ export default function Home() {
               </svg>
             </button>
 
-            <p style={{ opacity: 0.7, marginTop: 12 }}>
-              Upload photos to generate questions
-            </p>
+            {/* On mobile, the uploaded photos live here (where the caption sits) as
+                small numbered boxes — tap one to view that photo fullscreen. */}
+            {isMobile && images.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  gap: 8,
+                  marginTop: 12
+                }}
+              >
+                {images.map((src, i) => renderThumb(src, i, i + 1))}
+              </div>
+            )}
+
+            {isMobile && images.length > 0 ? (
+              <p style={{ opacity: 0.7, marginTop: 12 }}>
+                {images.length} / {MAX_IMAGES} photos ·{" "}
+                <button
+                  type="button"
+                  onClick={() => setImages([])}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: ACCENT_TEXT,
+                    cursor: "pointer",
+                    fontSize: "inherit",
+                    padding: 0,
+                    textDecoration: "underline"
+                  }}
+                >
+                  Clear
+                </button>
+              </p>
+            ) : (
+              <p style={{ opacity: 0.7, marginTop: 12 }}>
+                Upload photos to generate questions
+              </p>
+            )}
 
             {/* Generate button (uses all uploaded photos) */}
             <button
@@ -1561,15 +2042,25 @@ export default function Home() {
             )}
           </div>
 
-          {/* Right column: spacer to keep the controls centered */}
-          <div style={{ flex: 1 }} />
+          {/* Right column: spacer to keep the controls centered (desktop only) */}
+          {!isMobile && <div style={{ flex: 1 }} />}
         </div>
       )}
 
       {/* Audio page: uploaded files on the left, upload controls centered */}
       {mode === "audio" && (
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 24, marginTop: 20 }}>
-          {/* Left column: uploaded audio/video files, each with a player */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: isMobile ? "column" : "row",
+            alignItems: isMobile ? "center" : "flex-start",
+            gap: 24,
+            marginTop: 20
+          }}
+        >
+          {/* Left column: uploaded audio/video players (desktop only; on mobile a
+              small tappable video preview sits above the buttons instead) */}
+          {!isMobile && (
           <div
             style={{
               flex: 1,
@@ -1645,6 +2136,7 @@ export default function Home() {
               </div>
             ))}
           </div>
+          )}
 
           {/* Center column: upload controls */}
           <div
@@ -1666,6 +2158,127 @@ export default function Home() {
                 e.target.value = ""; // reset so the same files can be picked again
               }}
             />
+
+            {/* On mobile a small video preview sits centered above the two
+                buttons; tap it to expand fullscreen. Audio-only files show a
+                compact name chip in the same spot instead. */}
+            {isMobile && audioFiles[0]?.isVideo && (
+              <div
+                onClick={() => setFullscreenVideo(audioFiles[0].previewUrl)}
+                style={{
+                  position: "relative",
+                  marginBottom: 16,
+                  cursor: "pointer",
+                  lineHeight: 0
+                }}
+              >
+                <video
+                  src={`${audioFiles[0].previewUrl}#t=0.1`}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  style={{
+                    width: 132,
+                    height: 84,
+                    objectFit: "cover",
+                    border: "2px solid #888",
+                    borderRadius: 3,
+                    background: "#000"
+                  }}
+                />
+                {/* play badge, centered over the thumbnail */}
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none"
+                  }}
+                >
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="11" fill="rgba(0,0,0,0.55)" />
+                    <path d="M10 8 L16 12 L10 16 Z" fill="#fff" />
+                  </svg>
+                </span>
+                {/* remove */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeAudio(0);
+                  }}
+                  aria-label="Remove file"
+                  title="Remove"
+                  style={{
+                    position: "absolute",
+                    top: -8,
+                    right: -8,
+                    width: 22,
+                    height: 22,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                    border: "1px solid #888",
+                    background: "#000",
+                    color: "#fff",
+                    fontSize: 14,
+                    lineHeight: 1,
+                    cursor: "pointer"
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {isMobile && audioFiles[0] && !audioFiles[0].isVideo && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 16,
+                  maxWidth: 240,
+                  fontSize: 14,
+                  color: "#c7c7c7"
+                }}
+              >
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  {audioFiles[0].name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeAudio(0)}
+                  aria-label="Remove file"
+                  title="Remove"
+                  style={{
+                    flexShrink: 0,
+                    width: 22,
+                    height: 22,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                    border: "1px solid #888",
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 14,
+                    lineHeight: 1,
+                    cursor: "pointer"
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
 
             {/* Add buttons: microphone (upload a file) + YouTube (paste a link) */}
             <div style={{ display: "flex", gap: 12 }}>
@@ -1772,11 +2385,45 @@ export default function Home() {
               />
             )}
 
-            <p style={{ opacity: 0.7, marginTop: 12 }}>
-              {audioUploading
-                ? "Uploading" + ".".repeat(dotCount)
-                : "Upload audio or a YouTube link to generate questions"}
-            </p>
+            {audioUploading ? (
+              <div style={{ marginTop: 16, width: 220 }}>
+                {/* Rectangular bordered box (matches the site's #888 boxes) that
+                    fills with the accent as the upload progresses. */}
+                <div
+                  style={{
+                    height: 16,
+                    width: "100%",
+                    border: "2px solid #888",
+                    borderRadius: 3,
+                    background: "transparent",
+                    overflow: "hidden"
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${audioProgress}%`,
+                      background: ACCENT_BG_STRONG,
+                      transition: "width 0.15s ease"
+                    }}
+                  />
+                </div>
+                <p
+                  style={{
+                    opacity: 0.7,
+                    marginTop: 8,
+                    fontSize: 13,
+                    textAlign: "center"
+                  }}
+                >
+                  Uploading {audioProgress}%
+                </p>
+              </div>
+            ) : (
+              <p style={{ opacity: 0.7, marginTop: 12 }}>
+                Upload audio or a YouTube link to generate questions
+              </p>
+            )}
 
             {/* Generate button (transcribes, then builds the quiz) */}
             <button
@@ -1813,28 +2460,37 @@ export default function Home() {
             )}
           </div>
 
-          {/* Right column: spacer to keep the controls centered */}
-          <div style={{ flex: 1 }} />
+          {/* Right column: spacer to keep the controls centered (desktop only) */}
+          {!isMobile && <div style={{ flex: 1 }} />}
         </div>
       )}
 
       <div style={{ marginTop: 32 }}>
         {questions.map((q, i) => {
-          // Reveal right/wrong either after Submit, OR instantly once this
-          // question is answered (when instant feedback is turned on).
+          const qRound = q.round ?? 0;
+          // Reveal right/wrong once this question's round is graded, OR instantly
+          // once it's answered (when instant feedback is on).
           const revealed =
-            submitted || (instantFeedback && answers[i] != null);
+            qRound < submittedRounds || (instantFeedback && answers[i] != null);
 
-          // Colour the title green (right) or red (wrong) once revealed
+          // Title colour: green/red once revealed; otherwise yellow for extension
+          // (rechallenge) questions, and the default colour for the original round.
           const titleColor = revealed
             ? answers[i] === q.answer
               ? CORRECT_GREEN
               : WRONG_RED
-            : undefined;
+            : qRound >= 1
+              ? RECHALLENGE_YELLOW
+              : undefined;
+
+          // Last question of its round? (rounds are contiguous in the array)
+          const isLastOfRound =
+            i === questions.length - 1 ||
+            (questions[i + 1].round ?? 0) !== qRound;
 
           return (
+            <Fragment key={i}>
             <div
-              key={i}
               id={`question-${i}`}
               className={`q-card${flashIndex === i ? " flash-missing" : ""}`}
               style={{ marginBottom: 18, padding: 12, borderRadius: 3 }}
@@ -1907,31 +2563,11 @@ export default function Home() {
                 );
               })}
             </div>
+            {/* After the last question of each round: its Submit / grade / Rechallenge */}
+            {isLastOfRound && renderRoundControls(qRound)}
+            </Fragment>
           );
         })}
-
-        {/* Submit button — turns into the grade once pressed */}
-        {questions.length > 0 && (
-          <button
-            onClick={handleSubmit}
-            disabled={submitted || loading}
-            style={{
-              marginTop: 8,
-              padding: "12px 28px",
-              background: SUBMIT_GREEN,
-              color: "white",
-              fontWeight: "bold",
-              border: "none",
-              borderRadius: 3,
-              fontSize: submitted ? 20 : 16, // grade shows a touch bigger
-              cursor: submitted ? "default" : "pointer"
-            }}
-          >
-            {submitted
-              ? `${score}/${questions.length} (${percent}%)`
-              : "Submit"}
-          </button>
-        )}
       </div>
     </main>
   );
