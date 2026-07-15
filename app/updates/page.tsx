@@ -5,6 +5,19 @@ export const metadata = { title: "Updates — Athenia" };
 // Newest first. Add a new entry at the top each release.
 const UPDATES = [
   {
+    version: "0.5",
+    date: "July 15",
+    items: [
+      "A new and stronger AI model to help produce more accurate questions",
+      "Quiz History page to organize old quizzes into separate folders to practice more",
+      "Stats viewer to show how much studying and practice you've worked on",
+      "A streak system to work towards future premium benefits on a free plan",
+      "Rechallenge feature to master the topic you're practicing",
+      "Hints for explanations of questions",
+      "Minor UI improvements"
+    ]
+  },
+  {
     version: "0.4",
     date: "July 9",
     items: [

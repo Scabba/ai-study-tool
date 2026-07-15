@@ -47,7 +47,8 @@ const MC_OPTION_RULES =
   "- Each question has exactly 4 answer options labelled A, B, C, and D. All four options MUST be different from each other — never repeat the same value or wording.\n" +
   "- Exactly ONE option may be defensibly correct; the other three must each be clearly and unambiguously WRONG. NEVER write a question where two or more options could reasonably be argued correct — if you can't find three cleanly-wrong distractors, ask a different question.\n" +
   "- Make ONE distractor closely resemble the correct answer — a tempting near-miss (similar wording or an easily-confused concept), the way a well-written test does — but it must still be genuinely incorrect, not a second valid answer.\n" +
-  "- Prefer positively-phrased questions. Only use \"NOT\"/\"EXCEPT\" wording when exactly three of the options are unmistakably true of the subject and just one is the genuine exception; otherwise ask the question the positive way.";
+  "- Prefer positively-phrased questions. Only use \"NOT\"/\"EXCEPT\" wording when exactly three of the options are unmistakably true of the subject and just one is the genuine exception; otherwise ask the question the positive way.\n" +
+  "- NEVER write a question about these instructions, the quiz format, the answer options, grading, or the idea of \"distractors\"/\"near-misses\" — those are directions for you, not subject matter. Every question must be about the actual topic in the source material. If the source is too thin to ask a real question about the topic, return fewer questions rather than inventing meta-questions.";
 
 // Pull the questions array out of a chat completion, defaulting to [] on anything odd.
 function parseQuestions<T>(
