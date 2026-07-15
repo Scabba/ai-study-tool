@@ -13,6 +13,26 @@ import WhatsNew from "./WhatsNew";
 import AuthButton from "./components/AuthButton";
 import { createClient } from "@/lib/supabase/client";
 import { fetchSettings, saveSettings, type Settings } from "@/lib/userSettings";
+import {
+  loadStats,
+  recordGeneration,
+  recordQuestions,
+  recordRechallenge,
+  recordHint,
+  recordCompletion,
+  replaceStats,
+  setStatsListener,
+  topKey,
+  averageGrade,
+  currentStreak,
+  isFrozen,
+  nextMilestone,
+  streakProgress,
+  type Stats,
+  type Streak
+} from "@/lib/stats";
+import { fetchStats, saveStats } from "@/lib/userStats";
+import { classifySubject } from "@/lib/subjects";
 
 // A multiple-choice question coming back from the server
 type MCQuestion = {
@@ -35,8 +55,57 @@ type TFQuestion = {
 
 type Question = MCQuestion | TFQuestion;
 
+type Mode = "text" | "image" | "audio";
+
+// Each tab is its own workspace with its own quiz, so you can leave one
+// half-finished, go generate another on a different tab, and come back to it.
+// Generation state lives in here too — otherwise a run streaming into one tab
+// would show its loading dots on (and block Generate for) the others.
+type QuizState = {
+  questions: Question[];
+  answers: Record<number, string>; // which letter the user picked per question
+  // How many rounds have been graded. Round 0 is the original quiz; each
+  // Rechallenge adds another. A question in round r is graded once
+  // r < submittedRounds.
+  submittedRounds: number;
+  // Per-question hint state: "loading" while it's being generated, then the text.
+  hints: Record<number, { status: "loading" | "done"; text?: string }>;
+  loading: boolean; // a generation is streaming into this tab
+  rechallengeLoading: boolean; // a rechallenge round is streaming into this tab
+};
+
+const EMPTY_QUIZ: QuizState = {
+  questions: [],
+  answers: {},
+  submittedRounds: 0,
+  hints: {},
+  loading: false,
+  rechallengeLoading: false
+};
+
+const emptyQuizzes = (): Record<Mode, QuizState> => ({
+  text: { ...EMPTY_QUIZ },
+  image: { ...EMPTY_QUIZ },
+  audio: { ...EMPTY_QUIZ }
+});
+
 // Most photos you can upload at once
 const MAX_IMAGES = 5;
+
+// The in-progress quiz is mirrored here so leaving the page (Support, Quiz
+// history, Updates, ...) and coming back doesn't throw it away. sessionStorage,
+// not localStorage: it should outlive a navigation, not a whole browser session.
+const QUIZ_SESSION_KEY = "atheniaActiveQuiz";
+
+// Parks the restart button just off the right edge of a Generate button, out of
+// the flow so showing it never shifts the (centered) Generate button.
+const restartSlot: React.CSSProperties = {
+  position: "absolute",
+  left: "100%",
+  marginLeft: 10,
+  top: "50%",
+  transform: "translateY(-50%)"
+};
 
 // Difficulty slider stops (index 0 -> 2)
 const DIFFICULTIES = ["Middle School", "High School", "University"];
@@ -106,6 +175,13 @@ const SUBMIT_GREEN = "#3f9169";
 // Submit / grade box.
 const RECHALLENGE_YELLOW = "#d9b45a";
 const RECHALLENGE_BTN = "#c79a34";
+// Hint theme: the same yellow used for the answer-selection dot, so the
+// lightbulb and hint text read as one "yellow" accent.
+const HINT_YELLOW = "#eab308";
+// Streak bar: light orange normally, light blue while a freeze is protecting it.
+const STREAK_ORANGE = "#e9a05c";
+const STREAK_FROZEN_BLUE = "#7dd3fc";
+const STREAK_TRACK = "rgba(148, 163, 184, 0.22)";
 
 // Whether Supabase auth is wired up (keys present in the browser bundle)
 const SUPABASE_CONFIGURED =
@@ -134,11 +210,18 @@ const GRADE_OPTIONS = [
 
 export default function Home() {
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"text" | "image" | "audio">("text"); // which page tab is active
+  const [mode, setMode] = useState<Mode>("text"); // which page tab is active
   const [images, setImages] = useState<string[]>([]); // uploaded images on the image page
   // uploaded audio/video: previewUrl (local player), remoteUrl (Supabase Storage), path (for cleanup)
   const [audioFiles, setAudioFiles] = useState<
-    { name: string; previewUrl: string; remoteUrl: string; path: string; isVideo: boolean }[]
+    {
+      name: string;
+      previewUrl: string;
+      remoteUrl: string;
+      path: string;
+      isVideo: boolean;
+      sig: string; // name|size|lastModified — to skip re-uploading the same file
+    }[]
   >([]);
   const [audioUploading, setAudioUploading] = useState(false); // is a file uploading to Storage?
   const [audioProgress, setAudioProgress] = useState(0); // upload progress 0–100 for the loading bar
@@ -153,14 +236,21 @@ export default function Home() {
   const isMobile = useIsMobile();
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
   const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null); // video shown fullscreen
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [answers, setAnswers] = useState<Record<number, string>>({}); // which letter the user picked per question
-  const [loading, setLoading] = useState(false);
-  // How many rounds have been graded. Round 0 is the original quiz; each
-  // Rechallenge adds another round. A question in round r is graded once
-  // r < submittedRounds. (Replaces the old single `submitted` boolean.)
-  const [submittedRounds, setSubmittedRounds] = useState(0);
-  const [rechallengeLoading, setRechallengeLoading] = useState(false); // a rechallenge round is streaming in
+  // One quiz per tab; the active tab's is what the page renders.
+  const [quizzes, setQuizzes] = useState<Record<Mode, QuizState>>(emptyQuizzes);
+  const { questions, answers, submittedRounds, hints, loading, rechallengeLoading } =
+    quizzes[mode];
+
+  // Patch one tab's quiz. Callers pass the tab explicitly, so a generation that
+  // started on Text keeps writing to Text even after you switch away.
+  const patchQuiz = (
+    m: Mode,
+    patch: Partial<QuizState> | ((q: QuizState) => Partial<QuizState>)
+  ) =>
+    setQuizzes((prev) => ({
+      ...prev,
+      [m]: { ...prev[m], ...(typeof patch === "function" ? patch(prev[m]) : patch) }
+    }));
   const [instantFeedback, setInstantFeedback] = useState(false); // reveal right/wrong as you answer
   const [toggleError, setToggleError] = useState<string | null>(null); // shown if you try to change instant feedback mid-quiz
   const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
@@ -168,11 +258,18 @@ export default function Home() {
   const [tfAmount, setTfAmount] = useState(0); // how many true/false questions (0 = none)
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
+  const [showStats, setShowStats] = useState(false); // the Stats panel
+  const [statsData, setStatsData] = useState<Stats | null>(null); // snapshot shown in the Stats panel
+  const [streak, setStreak] = useState<Streak | null>(null); // daily streak shown under the title
+  const [showStreakInfo, setShowStreakInfo] = useState(false); // the streak's "i" reward popover
   const [dragging, setDragging] = useState(false); // a file is being dragged over the text box
   const [difficulty, setDifficulty] = useState(1); // 0=Middle School, 1=High School, 2=University
   const [gradeYear, setGradeYear] = useState<string | null>(null); // chosen grade/year within the difficulty
   const [dotCount, setDotCount] = useState(3); // for the animated "paste text here..." dots
   const [flashIndex, setFlashIndex] = useState<number | null>(null); // which question to flash as "missing"
+  const reviewScrollRef = useRef(false); // scroll to the quiz after opening one from history
+  const streakInfoRef = useRef<HTMLDivElement>(null); // the streak bar + its "i" popover
+  const quizRestored = useRef(false); // true once the saved quiz has been read back
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden PDF file picker
   const dragDepth = useRef(0); // enter/leave counter so the drag highlight doesn't flicker over children
   const imageInputRef = useRef<HTMLInputElement>(null); // hidden image file picker
@@ -186,6 +283,8 @@ export default function Home() {
   const skipFirstSave = useRef(true); // don't save settings on the very first render
   const cloudReady = useRef(false); // true once we've loaded (or migrated) this user's cloud settings
   const cloudSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // debounces cloud writes
+  const statsCloudReady = useRef(false); // true once we've loaded (or seeded) this user's cloud stats
+  const statsCloudTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // debounces cloud stat writes
   const latestSettings = useRef<Settings>({
     difficulty: 1,
     gradeYear: null,
@@ -193,7 +292,12 @@ export default function Home() {
     amount: 5,
     tfAmount: 0
   }); // always holds the current settings (used to seed a brand-new account)
-  const genAbortRef = useRef<AbortController | null>(null); // cancels an in-flight generation
+  // One in-flight generation per tab, so generating on Image can't cancel Text's.
+  const genAbortRef = useRef<Record<Mode, AbortController | null>>({
+    text: null,
+    image: null,
+    audio: null
+  });
 
   // Close the mobile hamburger menu when you tap outside it
   useEffect(() => {
@@ -362,6 +466,226 @@ export default function Home() {
     };
   }, [authClient, authUserId]);
 
+  // Mirror stats to the account whenever they change (debounced — recording a
+  // question fires often). Only pushes once the cloud stats have been loaded, so
+  // a fresh local copy can't clobber the account during sign-in.
+  useEffect(() => {
+    setStatsListener((s) => {
+      if (!authClient || !authUserId || !statsCloudReady.current) return;
+      if (statsCloudTimer.current) clearTimeout(statsCloudTimer.current);
+      statsCloudTimer.current = setTimeout(() => {
+        saveStats(authClient, authUserId, s);
+      }, 1500);
+    });
+    return () => setStatsListener(null);
+  }, [authClient, authUserId]);
+
+  // On sign-in, load the account's stats (cloud wins across devices). If the
+  // account has none yet, seed it from this device's local stats.
+  useEffect(() => {
+    statsCloudReady.current = false;
+    if (!authClient || !authUserId) return;
+    let active = true;
+    (async () => {
+      const cloud = await fetchStats(authClient, authUserId);
+      if (!active) return;
+      if (cloud) {
+        replaceStats(cloud); // overwrite local with the account copy
+        setStreak(cloud.streak); // ...and show the account's streak
+      } else {
+        await saveStats(authClient, authUserId, loadStats());
+      }
+      if (active) statsCloudReady.current = true;
+    })();
+    return () => {
+      active = false;
+    };
+  }, [authClient, authUserId]);
+
+  // Streak lives in localStorage, so it can only be read once we're in the
+  // browser — this one-time setState is intentional.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setStreak(loadStats().streak);
+  }, []);
+
+  // Close the streak's "i" popover when clicking anywhere outside it.
+  useEffect(() => {
+    if (!showStreakInfo) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (!streakInfoRef.current?.contains(e.target as Node)) setShowStreakInfo(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showStreakInfo]);
+
+  // Bring back the quizzes we were in the middle of (all three tabs), so
+  // navigating away to Support / Quiz history / Updates and back doesn't lose
+  // them. Runs before the handoff effects below, so opening a saved quiz from
+  // history still wins over whatever was here.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = sessionStorage.getItem(QUIZ_SESSION_KEY);
+        if (raw) {
+          const saved = JSON.parse(raw) as Partial<Record<Mode, QuizState>>;
+          const restored = emptyQuizzes();
+          for (const m of ["text", "image", "audio"] as Mode[]) {
+            const q = saved[m];
+            if (!q || !Array.isArray(q.questions) || q.questions.length === 0) continue;
+            restored[m] = {
+              ...EMPTY_QUIZ,
+              questions: q.questions,
+              answers: q.answers ?? {},
+              submittedRounds: q.submittedRounds ?? 0,
+              // Drop hints still loading when we left — that fetch is long gone.
+              // Loading flags are dropped too: those streams didn't survive.
+              hints: Object.fromEntries(
+                Object.entries(q.hints ?? {}).filter(([, h]) => h?.status === "done")
+              )
+            };
+          }
+          setQuizzes(restored);
+        }
+      } catch {
+        // no session storage / bad payload — start fresh
+      }
+      quizRestored.current = true; // only now may we start writing back
+    })();
+  }, []);
+
+  // Mirror every tab's quiz into sessionStorage on change.
+  useEffect(() => {
+    if (!quizRestored.current) return; // don't clobber the save before we've read it
+    try {
+      const anyQuestions = (["text", "image", "audio"] as Mode[]).some(
+        (m) => quizzes[m].questions.length > 0
+      );
+      if (!anyQuestions) sessionStorage.removeItem(QUIZ_SESSION_KEY);
+      else sessionStorage.setItem(QUIZ_SESSION_KEY, JSON.stringify(quizzes));
+    } catch {
+      // storage full/unavailable — the quizzes just won't survive a navigation
+    }
+  }, [quizzes]);
+
+  // A folder "rechallenge" hands off the missed questions via localStorage, then
+  // navigates here — pick them up once and load them as a fresh quiz to retake.
+  useEffect(() => {
+    (async () => {
+      let raw: string | null = null;
+      try {
+        raw = localStorage.getItem("atheniaFolderRechallenge");
+        if (raw) localStorage.removeItem("atheniaFolderRechallenge");
+      } catch {
+        return;
+      }
+      if (!raw) return;
+      try {
+        const items = JSON.parse(raw) as {
+          question: string;
+          options?: { A: string; B: string; C: string; D: string };
+          correct: string;
+        }[];
+        const qs: Question[] = items.slice(0, 20).map((it) =>
+          it.options
+            ? {
+                question: it.question,
+                options: it.options,
+                answer: it.correct,
+                difficulty: "medium",
+                round: 0
+              }
+            : {
+                type: "tf",
+                question: it.question,
+                answer: it.correct === "True" ? "True" : "False",
+                difficulty: "medium",
+                round: 0
+              }
+        );
+        if (qs.length) {
+          // Lands on the Text tab — that's the tab the app opens on.
+          patchQuiz("text", { ...EMPTY_QUIZ, questions: qs });
+        }
+      } catch {
+        // bad payload — ignore
+      }
+    })();
+  }, []);
+
+  // Opening a saved quiz from Quiz History hands its questions + the user's
+  // answers over via localStorage, then navigates here — load them once and
+  // show it already graded (in review mode).
+  useEffect(() => {
+    (async () => {
+      let raw: string | null = null;
+      try {
+        raw = localStorage.getItem("atheniaViewQuiz");
+        if (raw) localStorage.removeItem("atheniaViewQuiz");
+      } catch {
+        return;
+      }
+      if (!raw) return;
+      try {
+        const items = JSON.parse(raw) as {
+          question: string;
+          options?: { A: string; B: string; C: string; D: string };
+          correct: string;
+          chosen: string;
+        }[];
+        const qs: Question[] = items.map((it) =>
+          it.options
+            ? {
+                question: it.question,
+                options: it.options,
+                answer: it.correct,
+                difficulty: "medium",
+                round: 0
+              }
+            : {
+                type: "tf",
+                question: it.question,
+                answer: it.correct === "True" ? "True" : "False",
+                difficulty: "medium",
+                round: 0
+              }
+        );
+        if (qs.length) {
+          const chosen: Record<number, string> = {};
+          items.forEach((it, i) => {
+            if (it.chosen) chosen[i] = it.chosen;
+          });
+          reviewScrollRef.current = true; // jump to the quiz once it renders
+          // Lands on the Text tab — that's the tab the app opens on.
+          patchQuiz("text", {
+            ...EMPTY_QUIZ,
+            questions: qs,
+            answers: chosen,
+            submittedRounds: 1 // round 0 is already graded → reveal right/wrong
+          });
+        }
+      } catch {
+        // bad payload — ignore
+      }
+    })();
+  }, []);
+
+  // After opening a quiz from history, scroll it into view — otherwise you land
+  // at the top of the generator and the reviewed quiz is easy to miss below it.
+  useEffect(() => {
+    if (!reviewScrollRef.current || questions.length === 0) return;
+    reviewScrollRef.current = false;
+    // Defer past the router's scroll-to-top that follows navigation, and use an
+    // instant jump — a smooth scroll gets cancelled by the re-renders that land
+    // right after navigation, dropping us back at the top.
+    const t = setTimeout(() => {
+      document
+        .getElementById("question-0")
+        ?.scrollIntoView({ behavior: "auto", block: "start" });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [questions]);
+
   const placeholder = "paste text here" + ".".repeat(dotCount);
 
   function handleSubmit() {
@@ -383,7 +707,29 @@ export default function Home() {
       return; // stop here — don't grade an incomplete round
     }
 
-    setSubmittedRounds(activeRound + 1); // this round is now graded
+    // Stats: only the original quiz (round 0) counts as a completed quiz;
+    // rechallenge rounds are extra practice within it.
+    if (activeRound === 0) {
+      // Capture each round-0 question with the user's answer (for history + folder rechallenge)
+      const items = questions
+        .map((q, i) => ({ q, i }))
+        .filter(({ q }) => (q.round ?? 0) === 0)
+        .map(({ q, i }) => ({
+          question: q.question,
+          options: "options" in q ? q.options : undefined,
+          correct: q.answer,
+          chosen: answers[i] ?? ""
+        }));
+      const correct = items.filter((it) => it.chosen === it.correct).length;
+      const pct = items.length ? Math.round((correct / items.length) * 100) : 0;
+      const quizText = items
+        .map((it) => `${it.question} ${it.options ? Object.values(it.options).join(" ") : ""}`)
+        .join(" ");
+      recordCompletion(pct, gradeLabel(), classifySubject(quizText), items);
+      setStreak(loadStats().streak); // submitting completes the day
+    }
+
+    patchQuiz(mode, { submittedRounds: activeRound + 1 }); // this round is now graded
     setToggleError(null); // toggle is usable again now that it's submitted
   }
 
@@ -404,6 +750,50 @@ export default function Home() {
         : `year ${gradeYear} university`;
     }
     return `grade ${gradeYear} (${school.toLowerCase()})`;
+  }
+
+  // The specific grade level for the Stats panel: "8", "Year 2", or "Graduate".
+  function gradeLabel(): string {
+    if (!gradeYear) return DIFFICULTIES[difficulty];
+    if (difficulty === 2) {
+      return gradeYear === "Graduate" ? "Graduate" : `Year ${gradeYear}`;
+    }
+    return gradeYear; // grade number for middle / high school
+  }
+
+  // Reveal a hint for one question: show a brief loading animation, ask the
+  // server for a nudge, then display it in yellow under the choices. Ignores
+  // repeat clicks once a hint is loading or already shown.
+  async function takeHint(i: number) {
+    const q = questions[i];
+    if (!q || hints[i]) return;
+    const hintMode = mode; // the tab this hint belongs to
+    patchQuiz(hintMode, (s) => ({ hints: { ...s.hints, [i]: { status: "loading" } } }));
+    try {
+      const res = await fetch("/api/hint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: q.question,
+          answer: q.answer,
+          options: "options" in q ? q.options : undefined,
+          level: gradeLabel()
+        })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.hint) throw new Error(data?.error ?? "no hint");
+      patchQuiz(hintMode, (s) => ({
+        hints: { ...s.hints, [i]: { status: "done", text: data.hint } }
+      }));
+      recordHint(); // stats: count this hint
+    } catch {
+      // Failed — drop the state so the lightbulb can be tried again.
+      patchQuiz(hintMode, (s) => {
+        const next = { ...s.hints };
+        delete next[i];
+        return { hints: next };
+      });
+    }
   }
 
   // Read the NDJSON stream the server sends (one question per line, or an
@@ -457,16 +847,28 @@ export default function Home() {
       setGenError("Choose a question amount larger than zero to generate");
       return;
     }
-    setGenError(null);
-    setLoading(true);       // turn the dots ON before we start
-    setQuestions([]);       // clear the old quiz right away
-    setAnswers({});         // clear any previous selections
-    setSubmittedRounds(0);  // back to "nothing graded yet"
-    setToggleError(null);   // fresh quiz -> toggle is usable again
+    // Pin this run to the tab it started on, so it keeps filling that tab's quiz
+    // even if the user switches away mid-generation.
+    const genMode = mode;
 
-    // A fresh controller for this run, so switching pages can cancel it
+    setGenError(null);
+    setToggleError(null); // fresh quiz -> toggle is usable again
+    patchQuiz(genMode, { ...EMPTY_QUIZ, loading: true }); // clear this tab's quiz, dots on
+
+    // Stats: count which source this generation came from
+    recordGeneration(
+      payload.images?.length
+        ? "image"
+        : payload.audioUrl || payload.youtube
+          ? "audio"
+          : "text"
+    );
+
+    // Cancel this tab's previous run, otherwise its questions keep landing in
+    // the quiz we just cleared. Other tabs' runs are untouched.
+    genAbortRef.current[genMode]?.abort();
     const controller = new AbortController();
-    genAbortRef.current = controller;
+    genAbortRef.current[genMode] = controller;
 
     try {
       const res = await fetch("/api/generate", {
@@ -480,20 +882,30 @@ export default function Home() {
 
       // Original quiz -> everything is round 0. A small gap so each pops in.
       await readQuestionStream(res, controller.signal, async (item) => {
-        setQuestions((prev) => [...prev, { ...item, round: 0 }]);
+        patchQuiz(genMode, (q) => ({ questions: [...q.questions, { ...item, round: 0 }] }));
+        recordQuestions(1); // stats: count generated questions
         await new Promise((r) => setTimeout(r, 250));
       });
     } catch (err) {
-      // A page switch aborts the request on purpose — ignore that; re-throw real errors
+      // Restarting/regenerating aborts the request on purpose — ignore that; re-throw real errors
       if ((err as Error)?.name !== "AbortError") throw err;
     } finally {
-      // Only clear the loading state if THIS run is still the current one
-      // (a newer run or a page switch may have replaced/cancelled it)
-      if (genAbortRef.current === controller) {
-        genAbortRef.current = null;
-        setLoading(false); // turn the dots OFF when done (even if it failed)
+      // Only clear the loading state if THIS run is still this tab's current one
+      // (a newer run may have replaced/cancelled it)
+      if (genAbortRef.current[genMode] === controller) {
+        genAbortRef.current[genMode] = null;
+        patchQuiz(genMode, { loading: false }); // dots off, even if it failed
       }
     }
+  }
+
+  // Wipe this tab's quiz off the screen (the restart button next to Generate).
+  function clearQuiz() {
+    genAbortRef.current[mode]?.abort(); // stop anything still streaming into this tab
+    genAbortRef.current[mode] = null;
+    patchQuiz(mode, { ...EMPTY_QUIZ });
+    setToggleError(null);
+    setFlashIndex(null);
   }
 
   // Generate from whatever text we pass in (defaults to the textarea's text)
@@ -514,14 +926,17 @@ export default function Home() {
       (q, i) => (q.round ?? 0) === justGraded && answers[i] !== q.answer
     );
     if (wrong.length === 0) return;
+    recordRechallenge(); // stats
 
     const newRound = submittedRounds; // the next round
     const count = Math.min(wrong.length * 2, 10); // 2× the misses, capped at 10
+    const genMode = mode; // pin to the tab this rechallenge belongs to
 
     setGenError(null);
-    setRechallengeLoading(true);
+    patchQuiz(genMode, { rechallengeLoading: true });
+    genAbortRef.current[genMode]?.abort(); // don't let an earlier run stream into this round
     const controller = new AbortController();
-    genAbortRef.current = controller;
+    genAbortRef.current[genMode] = controller;
 
     try {
       const res = await fetch("/api/generate", {
@@ -540,15 +955,18 @@ export default function Home() {
       });
 
       await readQuestionStream(res, controller.signal, async (item) => {
-        setQuestions((prev) => [...prev, { ...item, round: newRound }]);
+        patchQuiz(genMode, (q) => ({
+          questions: [...q.questions, { ...item, round: newRound }]
+        }));
+        recordQuestions(1); // stats: rechallenge questions count too
         await new Promise((r) => setTimeout(r, 250));
       });
     } catch (err) {
       if ((err as Error)?.name !== "AbortError") throw err;
     } finally {
-      if (genAbortRef.current === controller) {
-        genAbortRef.current = null;
-        setRechallengeLoading(false);
+      if (genAbortRef.current[genMode] === controller) {
+        genAbortRef.current[genMode] = null;
+        patchQuiz(genMode, { rechallengeLoading: false });
       }
     }
   }
@@ -621,6 +1039,10 @@ export default function Home() {
       setGenError("The audio or video file must be under 25 MB");
       return;
     }
+    // Skip re-uploading the exact same file that's already loaded (don't burn
+    // bandwidth/storage on an identical upload back-to-back).
+    const sig = `${file.name}|${file.size}|${file.lastModified}`;
+    if (audioFiles[0]?.sig === sig) return;
     setGenError(null);
     setAudioProgress(0);
     setAudioUploading(true);
@@ -640,7 +1062,8 @@ export default function Home() {
           previewUrl: URL.createObjectURL(file),
           remoteUrl: pub.publicUrl,
           path,
-          isVideo: (file.type || "").startsWith("video")
+          isVideo: (file.type || "").startsWith("video"),
+          sig
         }
       ]);
       if (prev) {
@@ -707,33 +1130,19 @@ export default function Home() {
     setAccountMenuOpen(false);
   }
 
-  // Switch between the Text / Image / Audio tabs — each is its own fresh page,
-  // so clear the current quiz and any messages when you switch
-  function switchMode(m: "text" | "image" | "audio") {
+  // Switch between the Text / Image / Audio tabs. Each tab is its own workspace:
+  // its quiz (see `quizzes`) and its uploads stay put, so you can leave one
+  // half-finished, build another elsewhere, and come back to it. Only transient
+  // messages/overlays are reset. Uploaded audio is now cleaned up when you remove
+  // it rather than on every switch — deleting it here would yank the file out
+  // from under a generation still transcribing it.
+  function switchMode(m: Mode) {
     if (m === mode) return;
-    genAbortRef.current?.abort(); // stop any generation still streaming into the old page
     setMode(m);
-    setQuestions([]);
-    setAnswers({});
-    setSubmittedRounds(0);
     setGenError(null);
     setToggleError(null);
-    setImages([]);
-    // Clean up any uploaded audio file we're leaving behind
-    if (audioFiles.length > 0) {
-      try {
-        createClient()
-          .storage.from("audio")
-          .remove(audioFiles.map((a) => a.path));
-      } catch {
-        // best-effort cleanup
-      }
-      audioFiles.forEach((a) => URL.revokeObjectURL(a.previewUrl));
-    }
-    setAudioFiles([]);
-    setYoutubeUrl("");
-    setShowYoutube(false);
     setFullscreenImage(null);
+    setFullscreenVideo(null);
   }
 
   // Pull the text out of a PDF in the browser
@@ -767,7 +1176,7 @@ export default function Home() {
       return;
     }
     const name = file.name.toLowerCase();
-    setLoading(true);
+    patchQuiz("text", { loading: true }); // file upload only happens on the Text tab
     try {
       let extracted = "";
 
@@ -801,7 +1210,7 @@ export default function Home() {
     } catch {
       setGenError("Couldn't read that file. Try a different one.");
     } finally {
-      setLoading(false);
+      patchQuiz("text", { loading: false });
     }
   }
 
@@ -982,6 +1391,156 @@ export default function Home() {
     );
   };
 
+  // Restart: sits to the right of Generate once a quiz is on screen, and clears it.
+  const renderRestart = () =>
+    questions.length === 0 ? null : (
+      <button
+        onClick={clearQuiz}
+        aria-label="Clear quiz"
+        title="Clear quiz"
+        style={{
+          width: 36,
+          height: 36,
+          flexShrink: 0,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          borderRadius: 3,
+          border: "2px solid #888",
+          background: "transparent",
+          color: "#cbd5e1",
+          cursor: "pointer"
+        }}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      </button>
+    );
+
+  // The streak bar under the title: a thin rounded track that fills toward the
+  // next reward milestone. Light orange normally; light blue while a freeze is
+  // banked (5 quizzes in a day) and protecting the streak.
+  const renderStreak = () => {
+    if (!streak) return null; // not read from localStorage yet
+    const days = currentStreak(streak);
+    const frozen = isFrozen(streak);
+    const { target, reward } = nextMilestone(days);
+    const fill = frozen ? STREAK_FROZEN_BLUE : STREAK_ORANGE;
+
+    return (
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+        {/* day count + bar + the "i" that reveals what the next milestone pays */}
+        <div
+          ref={streakInfoRef}
+          style={{ position: "relative", display: "flex", alignItems: "center", gap: 8 }}
+        >
+          <span style={{ fontSize: 13, lineHeight: 1, color: "#cbd5e1" }}>{days}</span>
+
+          <div
+            style={{
+              width: 180,
+              height: 6,
+              // Squared-off ends, matching the app's slightly-rounded-square
+              // language. (3 would round a 6px bar into a full pill.)
+              borderRadius: 2,
+              background: STREAK_TRACK,
+              overflow: "hidden"
+            }}
+          >
+            <div
+              style={{
+                width: `${streakProgress(days) * 100}%`,
+                height: "100%",
+                borderRadius: 2,
+                backgroundColor: fill,
+                // Only the width animates. Transitioning the colour leaves the
+                // computed background stuck on the old value when a freeze kicks
+                // in, so the bar swaps colour instantly instead.
+                transition: "width 300ms ease"
+              }}
+            />
+          </div>
+
+          <button
+            onClick={() => setShowStreakInfo((v) => !v)}
+            aria-label="Streak reward"
+            aria-expanded={showStreakInfo}
+            style={{
+              width: 16,
+              height: 16,
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              borderRadius: "50%",
+              border: "1px solid #888",
+              background: "transparent",
+              color: "#888",
+              fontSize: 10,
+              fontStyle: "italic",
+              fontWeight: "bold",
+              lineHeight: 1,
+              cursor: "pointer"
+            }}
+          >
+            i
+          </button>
+
+          {showStreakInfo && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 8px)",
+                left: "50%",
+                transform: "translateX(-50%)",
+                whiteSpace: "nowrap",
+                background: "var(--background)",
+                color: "var(--foreground)",
+                border: "1px solid #888",
+                borderRadius: 3,
+                padding: "6px 10px",
+                fontSize: 12,
+                boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+                zIndex: 900
+              }}
+            >
+              {target} days - {reward} days premium
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Label/value pairs shown in the Stats panel.
+  const statRows = (s: Stats): [string, string][] => {
+    const gen = topKey(s.generatorCounts);
+    const avg = averageGrade(s);
+    return [
+      ["Questions generated", String(s.questionsGenerated)],
+      ["Quizzes completed", String(s.quizzesCompleted)],
+      ["Rechallenges taken", String(s.rechallengesTaken)],
+      ["Hints taken", String(s.hintsTaken)],
+      ["Most used generator", gen ? gen[0].toUpperCase() + gen.slice(1) : "—"],
+      ["Average grade", avg === null ? "—" : `${avg}%`],
+      ["Most used grade level", topKey(s.difficultyCounts) ?? "—"],
+      ["Most common subject", topKey(s.subjectCounts) ?? "—"]
+    ];
+  };
+
   return (
     <main style={{ padding: 40 }}>
       <WhatsNew />
@@ -1074,7 +1633,132 @@ export default function Home() {
             {link.label}
           </Link>
         ))}
+
+        {/* Quiz History — circular button with a history (clock + back-arrow) icon */}
+        {!isMobile && (
+          <Link
+            href="/history"
+            aria-label="Quiz history"
+            title="Quiz history"
+            style={{
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "50%",
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              textDecoration: "none",
+              cursor: "pointer"
+            }}
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M12 7v5l4 2" />
+            </svg>
+          </Link>
+        )}
+
+        {/* Stats — circular button with an ascending bar-chart icon */}
+        {!isMobile && (
+          <button
+            onClick={() => {
+              setStatsData(loadStats());
+              setShowStats(true);
+            }}
+            aria-label="Stats"
+            title="Stats"
+            style={{
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "50%",
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              cursor: "pointer"
+            }}
+          >
+            <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor">
+              {/* three ascending bars: small, medium, large — squared off (rx 1) */}
+              <rect x="3" y="14" width="4.5" height="7" rx="1" />
+              <rect x="9.75" y="9" width="4.5" height="12" rx="1" />
+              <rect x="16.5" y="4" width="4.5" height="17" rx="1" />
+            </svg>
+          </button>
+        )}
       </div>
+
+      {/* Stats panel — a centered card; click the backdrop to close */}
+      {showStats && statsData && (
+        <div
+          onClick={() => setShowStats(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 340,
+              maxWidth: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div
+              style={{
+                fontWeight: "bold",
+                fontSize: 22,
+                textAlign: "center",
+                marginBottom: 16
+              }}
+            >
+              Stats
+            </div>
+            {statRows(statsData).map(([label, value]) => (
+              <div
+                key={label}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "10px 0",
+                  borderTop: "1px solid #333"
+                }}
+              >
+                <span style={{ opacity: 0.7 }}>{label}</span>
+                <span style={{ fontWeight: 600, textAlign: "right" }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* "?" help circle, fixed to the top-right of the screen */}
       <button
@@ -1091,7 +1775,7 @@ export default function Home() {
           border: "2px solid #888",
           background: "var(--background)",
           color: "inherit",
-          fontSize: 20,
+          fontSize: 24,
           fontWeight: "bold",
           cursor: "pointer",
           zIndex: 1000
@@ -1529,12 +2213,14 @@ export default function Home() {
           fontWeight: "bold",
           fontSize: 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: 32,  // matches the gap between the tabs and the image button
+          marginBottom: 12,
           transform: "translateY(10px)"  // nudge just the text down, without shifting the layout below
         }}
       >
         Athenia
       </h1>
+
+      {renderStreak()}
 
       {/* Tab bar: fixed at the top-left (desktop only — mobile uses the menu) */}
       {!isMobile && (
@@ -1643,6 +2329,26 @@ export default function Home() {
                   {m}
                 </button>
               ))}
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setStatsData(loadStats());
+                  setShowStats(true);
+                  setMobileMenuOpen(false);
+                }}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  border: "none",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  cursor: "pointer"
+                }}
+              >
+                Stats
+              </button>
               {[
                 { label: "Support", href: "/support" },
                 { label: "Updates", href: "/updates" }
@@ -1697,6 +2403,9 @@ export default function Home() {
         style={{
           position: "relative",
           width: "100%",
+          // Lines the toolbar up with the top of the image / audio upload boxes
+          // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
+          marginTop: 66,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
           transition: "border-color 0.15s"
@@ -1756,7 +2465,7 @@ export default function Home() {
           style={{
             display: "block",
             width: "100%",
-            height: 200,
+            height: 150,
             border: "none",
             outline: "none",
             resize: "vertical",
@@ -1793,35 +2502,37 @@ export default function Home() {
         )}
       </div>
 
-      <br />
-
-      <button
-        onClick={() => generateQuestions()}
-        disabled={loading}
-        style={{
-          display: "block",
-          margin: "12px auto 0", // centered under the textarea
-          padding: "10px 24px",
-          minWidth: 190,
-          height: 44,
-          background: ACCENT_BG,
-          color: ACCENT_TEXT,
-          border: "none",
-          borderRadius: 3,
-          fontSize: 16,
-          cursor: loading ? "default" : "pointer"
-        }}
-      >
-        {loading ? (
-          <span className="loading-dots">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-        ) : (
-          "Generate"
-        )}
-      </button>
+      {/* Generate stays centered under the textarea; the restart hangs off its
+          right absolutely so it can't nudge the button when it appears. */}
+      <div style={{ position: "relative", width: "fit-content", margin: "12px auto 0" }}>
+        <button
+          onClick={() => generateQuestions()}
+          disabled={loading}
+          style={{
+            display: "block",
+            padding: "10px 24px",
+            minWidth: 190,
+            height: 44,
+            background: ACCENT_BG,
+            color: ACCENT_TEXT,
+            border: "none",
+            borderRadius: 3,
+            fontSize: 16,
+            cursor: loading ? "default" : "pointer"
+          }}
+        >
+          {loading ? (
+            <span className="loading-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+          ) : (
+            "Generate"
+          )}
+        </button>
+        <span style={restartSlot}>{renderRestart()}</span>
+      </div>
 
       {/* Warning shown if you try to generate without picking a grade */}
       {genError && (
@@ -2008,32 +2719,35 @@ export default function Home() {
             )}
 
             {/* Generate button (uses all uploaded photos) */}
-            <button
-              onClick={() => generateFromImages()}
-              disabled={loading}
-              style={{
-                marginTop: 16,
-                padding: "10px 24px",
-                minWidth: 190,
-                height: 44,
-                background: ACCENT_BG,
-                color: ACCENT_TEXT,
-                border: "none",
-                borderRadius: 3,
-                fontSize: 16,
-                cursor: loading ? "default" : "pointer"
-              }}
-            >
-              {loading ? (
-                <span className="loading-dots">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </span>
-              ) : (
-                "Generate"
-              )}
-            </button>
+            <div style={{ position: "relative", marginTop: 16 }}>
+              <button
+                onClick={() => generateFromImages()}
+                disabled={loading}
+                style={{
+                  display: "block",
+                  padding: "10px 24px",
+                  minWidth: 190,
+                  height: 44,
+                  background: ACCENT_BG,
+                  color: ACCENT_TEXT,
+                  border: "none",
+                  borderRadius: 3,
+                  fontSize: 16,
+                  cursor: loading ? "default" : "pointer"
+                }}
+              >
+                {loading ? (
+                  <span className="loading-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </span>
+                ) : (
+                  "Generate"
+                )}
+              </button>
+              <span style={restartSlot}>{renderRestart()}</span>
+            </div>
 
             {genError && (
               <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
@@ -2426,32 +3140,35 @@ export default function Home() {
             )}
 
             {/* Generate button (transcribes, then builds the quiz) */}
-            <button
-              onClick={() => generateFromAudio()}
-              disabled={loading || audioUploading}
-              style={{
-                marginTop: 16,
-                padding: "10px 24px",
-                minWidth: 190,
-                height: 44,
-                background: ACCENT_BG,
-                color: ACCENT_TEXT,
-                border: "none",
-                borderRadius: 3,
-                fontSize: 16,
-                cursor: loading ? "default" : "pointer"
-              }}
-            >
-              {loading ? (
-                <span className="loading-dots">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </span>
-              ) : (
-                "Generate"
-              )}
-            </button>
+            <div style={{ position: "relative", marginTop: 16 }}>
+              <button
+                onClick={() => generateFromAudio()}
+                disabled={loading || audioUploading}
+                style={{
+                  display: "block",
+                  padding: "10px 24px",
+                  minWidth: 190,
+                  height: 44,
+                  background: ACCENT_BG,
+                  color: ACCENT_TEXT,
+                  border: "none",
+                  borderRadius: 3,
+                  fontSize: 16,
+                  cursor: loading ? "default" : "pointer"
+                }}
+              >
+                {loading ? (
+                  <span className="loading-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </span>
+                ) : (
+                  "Generate"
+                )}
+              </button>
+              <span style={restartSlot}>{renderRestart()}</span>
+            </div>
 
             {genError && (
               <div style={{ marginTop: 12, color: "#dc2626", fontSize: 15 }}>
@@ -2493,8 +3210,51 @@ export default function Home() {
             <div
               id={`question-${i}`}
               className={`q-card${flashIndex === i ? " flash-missing" : ""}`}
-              style={{ marginBottom: 18, padding: 12, borderRadius: 3 }}
+              style={{
+                position: "relative",
+                padding: 12,
+                borderRadius: 3,
+                // A hint slots INTO the existing gap between choice D and the next
+                // question rather than adding to it: giving up this card's bottom
+                // padding/margin buys back exactly the room the hint takes, so the
+                // question-to-question spacing is unchanged (see the hint's marginTop).
+                paddingBottom: hints[i] ? 0 : 12,
+                marginBottom: hints[i] ? 3 : 18
+              }}
             >
+              {/* Hint lightbulb — sits in the empty space to the left of the
+                  question, without shifting the question text. */}
+              <button
+                onClick={() => takeHint(i)}
+                title={hints[i] ? "Hint" : "Get a hint"}
+                aria-label="Get a hint"
+                style={{
+                  position: "absolute",
+                  left: -24,
+                  top: 16,
+                  padding: 0,
+                  background: "transparent",
+                  border: "none",
+                  lineHeight: 0,
+                  cursor: hints[i] ? "default" : "pointer"
+                }}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  // Filled once a hint has been taken, otherwise an outline.
+                  fill={hints[i]?.status === "done" ? HINT_YELLOW : "none"}
+                  stroke={HINT_YELLOW}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M9 18h6" />
+                  <path d="M10 22h4" />
+                  <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1v.2h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2Z" />
+                </svg>
+              </button>
               <p
                 style={{
                   fontWeight: "bold",
@@ -2552,7 +3312,10 @@ export default function Home() {
                           // lock a question once its answer is revealed, but
                           // DON'T disable the radio (disabled greys out the
                           // user's yellow dot)
-                          if (!revealed) setAnswers({ ...answers, [i]: choice.value });
+                          if (!revealed)
+                            patchQuiz(mode, (s) => ({
+                              answers: { ...s.answers, [i]: choice.value }
+                            }));
                         }}
                         style={{ accentColor: "#eab308", margin: 0 }} // yellow selection dot
                       />
@@ -2562,6 +3325,46 @@ export default function Home() {
                   </label>
                 );
               })}
+
+              {/* Hint: the same bouncing-squares animation as quiz loading,
+                  then the hint in yellow Inter text under choice D. Sits
+                  centered in the gap between choice D and the next question. */}
+              {hints[i]?.status === "loading" && (
+                <div style={{ marginTop: 15, display: "flex", alignItems: "center", height: 22 }}>
+                  {/* Same bouncing-squares motion as quiz loading, but in the
+                      hint's yellow (brighter than the rechallenge gold). Styled
+                      inline — only the `dot-fade` keyframe comes from the CSS. */}
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    {[0, 0.2, 0.4].map((delay) => (
+                      <span
+                        key={delay}
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: 2,
+                          background: HINT_YELLOW,
+                          animation: "dot-fade 1.2s infinite ease-in-out",
+                          animationDelay: `${delay}s`
+                        }}
+                      />
+                    ))}
+                  </span>
+                </div>
+              )}
+              {hints[i]?.status === "done" && hints[i]?.text && (
+                <p
+                  style={{
+                    marginTop: 15,
+                    marginBottom: 0,
+                    color: HINT_YELLOW,
+                    fontSize: 15,
+                    lineHeight: 1.45,
+                    fontFamily: "var(--font-inter), system-ui, sans-serif"
+                  }}
+                >
+                  {hints[i]?.text}
+                </p>
+              )}
             </div>
             {/* After the last question of each round: its Submit / grade / Rechallenge */}
             {isLastOfRound && renderRoundControls(qRound)}
