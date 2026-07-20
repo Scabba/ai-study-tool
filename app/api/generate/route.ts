@@ -10,6 +10,7 @@ import {
 } from "@/lib/rateLimit";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { isUserPro } from "@/lib/subscription";
+import { isHatefulInput } from "@/lib/moderation";
 
 // Signed-in Free plan: quizzes per day across text/image/YouTube (matches the
 // pricing card). Audio is Pro-only. Rechallenges and hints stay unlimited.
@@ -32,6 +33,10 @@ const AUDIO_PRO_ONLY = "Audio and video quizzes are an Athenia Pro feature.";
 const FREE_DAILY_MSG = `That's all ${FREE_DAILY_QUIZZES} quizzes for today. Upgrade to Athenia Pro for unlimited quizzes.`;
 // DRAFT COPY — William to reword.
 const AUDIO_MONTHLY_MSG = `You've used all ${PRO_AUDIO_SECONDS_PER_MONTH / 3600} hours of audio and video for this month. Your allowance resets on the 1st.`;
+// DRAFT COPY — William to reword. Worth writing this one carefully: a student
+// whose legitimate history notes trip the filter will read it, not just an abuser.
+const HATEFUL_INPUT =
+  "We can't make a quiz from that. Try different notes.";
 
 // The model used for question generation. Override with GENERATION_MODEL in the
 // env; defaults to gpt-5.4-mini (the key no longer has gpt-4o-mini access, so
@@ -60,7 +65,16 @@ const SOURCE_ONLY =
   "instructions, the quiz format, the answer options, grading, JSON, or the idea " +
   "of \"distractors\" — those are directions for you, not subject matter. If the " +
   "source is too thin to ask a real question about its topic, return fewer " +
-  "questions rather than inventing meta-questions.";
+  "questions rather than inventing meta-questions." +
+  // The prompts below say "based on the notes", and the model echoes that
+  // straight into the questions ("According to the notes, ..."), which reads
+  // like a reading-comprehension test instead of a study quiz.
+  " Every question must stand on its own as a question about the SUBJECT. Never " +
+  "refer to the source material itself — no \"according to the notes\", \"in the " +
+  "text\", \"the passage\", \"the lecture\", \"the video\", \"as mentioned\", or " +
+  "\"described above\". Ask \"What is photosynthesis?\", never \"According to the " +
+  "notes, what is photosynthesis?\". A student should be able to answer it " +
+  "without knowing where it came from.";
 
 const SYS_MC =
   "You generate multiple-choice study questions from notes. " +
@@ -745,6 +759,16 @@ export async function POST(req: Request) {
         return ndjsonError(AUDIO_MONTHLY_MSG);
       }
     }
+  }
+
+  // Screen what the user actually typed for slurs before it reaches the model.
+  // Scoped to typed text on purpose: transcripts and captions are checked
+  // nowhere, because a lecture on civil rights or a set-text novel can quote
+  // this language legitimately, and blocking a student's own lecture recording
+  // would be worse than the abuse it prevents. Someone deliberately feeding
+  // Athenia slurs is typing them.
+  if (text.trim() && (await isHatefulInput(text))) {
+    return ndjsonError(HATEFUL_INPUT);
   }
 
   // Rechallenge mode: build fresh questions on the concepts the student missed.

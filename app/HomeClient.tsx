@@ -2869,6 +2869,15 @@ export default function Home({
           }}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          // Enter generates; Shift+Enter (and the IME composition pass) still
+          // inserts a newline. Without the isComposing guard, picking a
+          // candidate in a Japanese/Chinese IME would fire a generation.
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+            e.preventDefault();
+            if (loading || !text.trim()) return;
+            generateQuestions();
+          }}
           placeholder={placeholder}
         />
 

@@ -258,8 +258,13 @@ export default function PricingModal({
         inset: 0,
         background: "rgba(0,0,0,0.6)",
         display: "flex",
-        alignItems: "center",
         justifyContent: "center",
+        // Deliberately NOT align-items:center. Centering a flex child that's
+        // taller than the scroll container pushes its top above the container's
+        // top edge, and overflow in that direction can't be scrolled to — the
+        // checkout view (tall payment element) had its header permanently cut
+        // off. `margin: auto` on the panel below centers it when it fits and
+        // stays reachable when it doesn't.
         zIndex: 2000,
         padding: 20,
         overflowY: "auto"
@@ -271,6 +276,7 @@ export default function PricingModal({
           position: "relative",
           width: 620,
           maxWidth: "100%",
+          margin: "auto",
           background: "var(--background)",
           color: "var(--foreground)",
           border: "1px solid #888",
