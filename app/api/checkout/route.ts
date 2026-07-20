@@ -56,7 +56,19 @@ export async function POST(req: Request) {
       client_reference_id: user.id,
       metadata: { userId: user.id },
       subscription_data: { metadata: { userId: user.id } },
-      allow_promotion_codes: true
+      allow_promotion_codes: true,
+      // A 100%-off promo code brings the total due to $0, and asking someone for
+      // a card to be charged nothing is a great way to lose them at the last
+      // step. `if_required` skips card collection whenever the amount due is 0
+      // and behaves exactly as before when it isn't. Subscription mode only,
+      // which is what we're in.
+      //
+      // The trade-off: a $0 subscription starts with no payment method on file.
+      // That's right for a forever-free code, but if a code is 100% off for a
+      // limited number of months, the first real invoice has nothing to charge
+      // and the subscription lapses to past_due — isProStatus() then correctly
+      // drops them off Pro. Stripe emails them to add a card before that.
+      payment_method_collection: "if_required"
     });
 
     if (elements) {
