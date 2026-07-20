@@ -157,6 +157,14 @@ export default function PricingModal({
 
   const pro = PRICING[cycle];
 
+  // A 100%-off code drives Stripe's running total to zero. The session is
+  // created with payment_method_collection: "if_required", so there's genuinely
+  // nothing to collect — asking for a card anyway is the fastest way to lose
+  // someone at the last step. The fields stay MOUNTED but hidden (not
+  // unmounted), so clearing the code brings them straight back and confirm()
+  // never loses its element.
+  const totalIsZero = liveTotal != null && parseFloat(liveTotal) === 0;
+
   async function upgrade() {
     if (busy) return;
     // Already subscribed -> manage in Stripe's portal instead of buying again.
@@ -349,11 +357,29 @@ export default function PricingModal({
               </div>
             </div>
 
-            {/* Stripe's card fields mount here, themed to match */}
-            <div ref={checkoutHostRef} style={{ marginTop: 14, minHeight: 220 }} />
-            {!payReady && (
-              <div style={{ fontSize: 13, opacity: 0.6, marginTop: 8 }}>
-                Loading secure payment fields…
+            {/* Stripe's card fields mount here, themed to match. Hidden rather
+                than unmounted when the total is $0 — see totalIsZero above. */}
+            <div style={{ display: totalIsZero ? "none" : undefined }}>
+              <div ref={checkoutHostRef} style={{ marginTop: 14, minHeight: 220 }} />
+              {!payReady && (
+                <div style={{ fontSize: 13, opacity: 0.6, marginTop: 8 }}>
+                  Loading secure payment fields…
+                </div>
+              )}
+            </div>
+            {totalIsZero && (
+              // DRAFT COPY — William to reword.
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: "12px 16px",
+                  border: "1px solid #888",
+                  borderRadius: 3,
+                  fontSize: 13,
+                  color: BLUE
+                }}
+              >
+                Your code covers the full cost — no card needed.
               </div>
             )}
 
@@ -426,7 +452,10 @@ export default function PricingModal({
             >
               {paying
                 ? "Processing…"
-                : `Subscribe · $${liveTotal ?? pro.amount.toFixed(2)}`}
+                : totalIsZero
+                  ? // DRAFT COPY — William to reword.
+                    "Start Athenia Pro · Free"
+                  : `Subscribe · $${liveTotal ?? pro.amount.toFixed(2)}`}
             </button>
             {payError && (
               <div style={{ fontSize: 13, color: "#e0776b", marginTop: 8 }}>
