@@ -4,16 +4,15 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.5";
+const APP_VERSION = "0.6";
 
 const WHATS_NEW = [
-  "💥 A new and stronger AI model to help produce more accurate questions",
-  "🔄 Quiz History page to organize old quizzes into separate folders to practice more",
-  "📊 Stats viewer to show how much studying and practice you've worked on",
-  "⭐ A streak system to work towards future premium benefits on a free plan",
-  "◀️ Rechallenge feature to master the topic you're practicing",
-  "💡 Hints for explanations of questions",
-  "📱 Minor UI improvements",
+  "📱 Mobile UI rework to improve accessibility",
+  "🎨 Customizable fonts and color palettes",
+  "💸 Monetization with Athenia Pro",
+  "🎙️ Record audio to turn into questions with Athenia Pro",
+  "🤖 AI Athenia Assistant",
+  "📰 Privacy Policy & Terms of Service",
 ];
 
 export default function WhatsNew() {

@@ -56,41 +56,41 @@ const HISTORY_CAP = 50; // keep the most recent N quizzes
 // "freeze" that covers one missed day, so the streak survives it.
 
 export type Streak = {
-  current: number; // consecutive completed days
-  lastDay: string; // "YYYY-MM-DD" of the most recent completed day ("" = never)
-  countToday: number; // quizzes submitted on `lastDay`
-  freezes: number; // banked freeze days (one per 5-quiz day)
-  premiumDays: number; // days of premium earned from milestones, banked for later
+  current: number; // consecutive streak days
+  lastDay: string; // ET day (YYYY-MM-DD) the streak was last increased
+  lastIncreaseAt: number; // ms timestamp of that increase — the decay clock
+  freezeProgress: number; // quizzes banked toward the next freeze (0..4)
+  freezeEarnedAt: number | null; // ms the current freeze was earned (null = none)
+  premiumDays: number; // days of Pro earned from milestones, banked for later
+  rewarded: number; // highest milestone already paid out — each pays ONCE
 };
 
 const EMPTY_STREAK: Streak = {
   current: 0,
   lastDay: "",
-  countToday: 0,
-  freezes: 0,
-  premiumDays: 0
+  lastIncreaseAt: 0,
+  freezeProgress: 0,
+  freezeEarnedAt: null,
+  premiumDays: 0,
+  rewarded: 0
 };
 
-const QUIZZES_PER_FREEZE = 5;
+const DAY_MS = 86_400_000;
+export const DECAY_AFTER_MS = 2 * DAY_MS; // streak decays 48h after it last went up
+export const FREEZE_QUIZZES = 4; // quizzes after the streak-extending one to earn a freeze
 
-// Local calendar day, as YYYY-MM-DD.
-export function dayKey(ms: number = Date.now()): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+// The streak's day boundary is midnight Eastern. en-CA formats as YYYY-MM-DD,
+// and the timeZone option handles EST/EDT so it doesn't drift in summer.
+export function estDayKey(ms: number = Date.now()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(ms));
 }
 
-// Whole days from day `a` to day `b`. Compared as plain dates via UTC so a DST
-// change can't shift the result by an hour and round to the wrong day.
-function dayDiff(a: string, b: string): number {
-  const [ay, am, ad] = a.split("-").map(Number);
-  const [by, bm, bd] = b.split("-").map(Number);
-  return Math.round(
-    (Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000
-  );
-}
-
-// Premium days awarded for *reaching* this streak day (0 = not a milestone).
+// Pro days awarded for *reaching* this streak day (0 = not a milestone).
 function milestoneReward(day: number): number {
   if (day === 7 || day === 14) return 3;
   if (day === 30) return 4;
@@ -99,12 +99,18 @@ function milestoneReward(day: number): number {
 }
 
 // The milestone this streak is working toward, and what it pays out.
-export function nextMilestone(current: number): { target: number; reward: number } {
-  if (current < 7) return { target: 7, reward: 3 };
-  if (current < 14) return { target: 14, reward: 3 };
-  if (current < 30) return { target: 30, reward: 4 };
-  if (current < 60) return { target: 60, reward: 5 };
-  return { target: 60 + (Math.floor((current - 60) / 30) + 1) * 30, reward: 5 };
+export function nextMilestone(
+  current: number,
+  rewarded = 0
+): { target: number; reward: number } {
+  // Always points at the next milestone still EARNABLE — claimed rewards never
+  // pay twice, so a lapse can't let you re-farm an old one.
+  const floor = Math.max(current, rewarded);
+  if (floor < 7) return { target: 7, reward: 3 };
+  if (floor < 14) return { target: 14, reward: 3 };
+  if (floor < 30) return { target: 30, reward: 4 };
+  if (floor < 60) return { target: 60, reward: 5 };
+  return { target: 60 + (Math.floor((floor - 60) / 30) + 1) * 30, reward: 5 };
 }
 
 // The milestone this streak last cleared (the bar fills from here to the next).
@@ -116,24 +122,60 @@ function prevMilestone(current: number): number {
   return 60 + Math.floor((current - 60) / 30) * 30;
 }
 
-// The streak as it stands *right now*. The stored `current` is only refreshed on
-// submit, so a streak can silently lapse between sessions — this reports what
-// the user should actually see today (0 once it has lapsed for good).
-export function currentStreak(st: Streak, today: string = dayKey()): number {
-  if (!st.lastDay) return 0;
-  const gap = dayDiff(st.lastDay, today);
-  if (gap <= 1) return st.current; // done today, or still has today to keep it alive
-  return st.freezes >= gap - 1 ? st.current : 0; // freezes cover the missed days
+// Settle the streak against the clock. A banked freeze is spent automatically
+// the moment a decay would happen: the streak is kept and the 48h countdown
+// restarts from that point. Anything still overdue after that decays normally
+// (-1, then -1 per further 24h). Pure — callers persist the result on submit.
+function settleStreak(
+  st: Streak,
+  now: number
+): { current: number; decayAt: number; freezeUsed: boolean; hasFreeze: boolean } {
+  const hasFreeze = !!st.freezeEarnedAt;
+  if (!st.lastIncreaseAt) {
+    return { current: st.current, decayAt: 0, freezeUsed: false, hasFreeze };
+  }
+  let decayAt = st.lastIncreaseAt + DECAY_AFTER_MS;
+  let freezeUsed = false;
+  if (now >= decayAt && hasFreeze) {
+    decayAt += DECAY_AFTER_MS; // freeze absorbs it and resets the countdown
+    freezeUsed = true;
+  }
+  let current = st.current;
+  if (now >= decayAt) {
+    current = Math.max(0, current - (Math.floor((now - decayAt) / DAY_MS) + 1));
+  }
+  return { current, decayAt, freezeUsed, hasFreeze: hasFreeze && !freezeUsed };
 }
 
-// Is the streak currently shielded by a banked freeze?
-export function isFrozen(st: Streak): boolean {
-  return st.freezes > 0;
+// Is a freeze banked and ready to protect the streak? (Drives the blue bar.)
+export function isFrozen(st: Streak, now: number = Date.now()): boolean {
+  return settleStreak(st, now).hasFreeze;
+}
+
+// Quizzes still needed to earn a freeze (null while one is banked — no stacking).
+export function freezeQuizzesLeft(st: Streak, now: number = Date.now()): number | null {
+  if (isFrozen(st, now)) return null;
+  return Math.max(0, FREEZE_QUIZZES - st.freezeProgress);
+}
+
+// When the streak next decays (after any freeze has done its job).
+export function streakDeadlines(
+  st: Streak,
+  now: number = Date.now()
+): { decayAt: number } | null {
+  if (!st.lastIncreaseAt) return null;
+  return { decayAt: settleStreak(st, now).decayAt };
+}
+
+// The streak as it stands right now — stored `current` only changes on submit,
+// so this applies whatever the clock owes since then.
+export function currentStreak(st: Streak, now: number = Date.now()): number {
+  return settleStreak(st, now).current;
 }
 
 // Fraction (0..1) of the way from the last milestone to the next.
-export function streakProgress(current: number): number {
-  const { target } = nextMilestone(current);
+export function streakProgress(current: number, rewarded = 0): number {
+  const { target } = nextMilestone(current, rewarded);
   const prev = prevMilestone(current);
   if (target <= prev) return 0;
   return Math.min(1, Math.max(0, (current - prev) / (target - prev)));
@@ -247,12 +289,17 @@ function streakFromRaw(v: unknown): Streak {
   if (!v || typeof v !== "object") return { ...EMPTY_STREAK };
   const st = v as Record<string, unknown>;
   const num = (x: unknown) => (typeof x === "number" && isFinite(x) && x > 0 ? x : 0);
+  const lastDay = typeof st.lastDay === "string" ? st.lastDay : "";
   return {
     current: num(st.current),
-    lastDay: typeof st.lastDay === "string" ? st.lastDay : "",
-    countToday: num(st.countToday),
-    freezes: num(st.freezes),
-    premiumDays: num(st.premiumDays)
+    lastDay,
+    // Saves from before the 48h clock have no timestamp — seed it from now so
+    // an existing streak gets a fresh window instead of instantly decaying.
+    lastIncreaseAt: num(st.lastIncreaseAt) || (lastDay ? Date.now() : 0),
+    freezeProgress: num(st.freezeProgress),
+    freezeEarnedAt: num(st.freezeEarnedAt) || null,
+    premiumDays: num(st.premiumDays),
+    rewarded: num(st.rewarded)
   };
 }
 
@@ -319,32 +366,39 @@ export function recordHint() {
   save(s);
 }
 
-// Roll the streak forward for a quiz submitted today (mutates `st`).
+// Roll the streak forward for a submitted quiz (mutates `st`).
 function advanceStreak(st: Streak) {
-  const today = dayKey();
+  const now = Date.now();
+  const today = estDayKey(now);
 
-  if (st.lastDay === today) {
-    st.countToday += 1; // already counted today; just tally toward the freeze
-  } else {
-    const gap = st.lastDay ? dayDiff(st.lastDay, today) : Infinity;
-    if (gap === 1) {
-      st.current += 1; // yesterday -> streak continues
-    } else if (gap > 1 && st.freezes >= gap - 1) {
-      st.freezes -= gap - 1; // spend freezes to cover the missed days
-      st.current += 1;
-    } else {
-      st.current = 1; // lapsed (or first ever) -> start over
-      st.freezes = 0;
-    }
+  if (st.lastDay !== today) {
+    // First quiz of a new Eastern day: settle any decay owed, then add today.
+    // The 48h decay clock restarts from this moment.
+    const settled = settleStreak(st, now);
+    if (settled.freezeUsed) st.freezeEarnedAt = null; // the freeze did its job
+    st.current = settled.current + 1;
     st.lastDay = today;
-    st.countToday = 1;
-    // Only pays out when the streak actually reaches a new day, so extra
-    // quizzes on the same day can't farm the same milestone repeatedly.
-    st.premiumDays += milestoneReward(st.current);
+    st.lastIncreaseAt = now;
+    st.freezeProgress = 0; // a fresh grind toward today's freeze
+    // Each milestone pays out ONCE ever — a lapse can't let you re-earn it.
+    const reward = milestoneReward(st.current);
+    if (reward > 0 && st.current > st.rewarded) {
+      st.premiumDays += reward;
+      st.rewarded = st.current;
+    }
+    return;
   }
 
-  // 5 quizzes in one day banks a freeze (once per day).
-  if (st.countToday === QUIZZES_PER_FREEZE) st.freezes += 1;
+  // Same day: further quizzes grind toward a freeze. Only one freeze exists at
+  // a time and they don't stack, so this pauses while one is active — the grind
+  // reopens (from zero) once it expires.
+  if (!isFrozen(st, now) && st.freezeProgress < FREEZE_QUIZZES) {
+    st.freezeProgress += 1;
+    if (st.freezeProgress >= FREEZE_QUIZZES) {
+      st.freezeEarnedAt = now;
+      st.freezeProgress = 0;
+    }
+  }
 }
 
 // A quiz was submitted/graded at `gradePercent`, on grade level `grade`, with an

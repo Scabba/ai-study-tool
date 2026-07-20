@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { signedInUserId } from "@/lib/authUser";
+import { ANON_LIMITS, bumpDaily, clientIp } from "@/lib/rateLimit";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -31,6 +33,20 @@ export async function POST(req: Request) {
 
   if (!question.trim()) {
     return json({ error: "No question provided." }, 400);
+  }
+
+  // Same gate as /api/generate — this route spends the same OpenAI key, so
+  // limiting only the generator would just move a bot over here.
+  const userId = await signedInUserId();
+  if (!userId) {
+    const limit = await bumpDaily("hint", clientIp(req), ANON_LIMITS.hint);
+    if (!limit.allowed) {
+      // DRAFT COPY — William to reword.
+      const message = limit.unavailable
+        ? "Couldn't get a hint right now. Try again in a moment."
+        : "You've used all of today's hints. Sign in to keep going.";
+      return json({ error: message }, limit.unavailable ? 503 : 429);
+    }
   }
 
   // Show the options (if any) so the hint can point away from the distractors,

@@ -3,6 +3,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useSyncExternalStore,
   Fragment,
@@ -11,6 +12,7 @@ import {
 import Link from "next/link";
 import WhatsNew from "./WhatsNew";
 import AuthButton from "./components/AuthButton";
+import PricingModal from "./components/PricingModal";
 import { createClient } from "@/lib/supabase/client";
 import { fetchSettings, saveSettings, type Settings } from "@/lib/userSettings";
 import {
@@ -28,11 +30,22 @@ import {
   isFrozen,
   nextMilestone,
   streakProgress,
+  streakDeadlines,
+  freezeQuizzesLeft,
   type Stats,
   type Streak
 } from "@/lib/stats";
 import { fetchStats, saveStats } from "@/lib/userStats";
 import { classifySubject } from "@/lib/subjects";
+import {
+  FONTS,
+  PALETTES,
+  DEFAULT_THEME,
+  applyTheme,
+  loadTheme,
+  saveTheme,
+  type ThemeChoice
+} from "@/lib/theme";
 
 // A multiple-choice question coming back from the server
 type MCQuestion = {
@@ -212,12 +225,11 @@ export default function Home() {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<Mode>("text"); // which page tab is active
   const [images, setImages] = useState<string[]>([]); // uploaded images on the image page
-  // uploaded audio/video: previewUrl (local player), remoteUrl (Supabase Storage), path (for cleanup)
+  // uploaded audio/video: previewUrl (local player), path (in the private Storage bucket)
   const [audioFiles, setAudioFiles] = useState<
     {
       name: string;
       previewUrl: string;
-      remoteUrl: string;
       path: string;
       isVideo: boolean;
       sig: string; // name|size|lastModified — to skip re-uploading the same file
@@ -225,6 +237,17 @@ export default function Home() {
   >([]);
   const [audioUploading, setAudioUploading] = useState(false); // is a file uploading to Storage?
   const [audioProgress, setAudioProgress] = useState(0); // upload progress 0–100 for the loading bar
+  const [recording, setRecording] = useState(false); // is the mic recording right now?
+  const [recordSeconds, setRecordSeconds] = useState(0); // elapsed recording time
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<Blob[]>([]); // audio data collected while recording
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Live visualizer: analyser reads mic levels, rAF loop moves the bars. The
+  // bars are driven by direct style writes (not React state) — 60 updates/sec
+  // through setState would re-render the whole page each frame.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const vizRafRef = useRef<number>(0);
+  const vizBarsRef = useRef<HTMLDivElement>(null);
   const [youtubeUrl, setYoutubeUrl] = useState(""); // pasted YouTube link on the audio page
   const [showYoutube, setShowYoutube] = useState(false); // is the YouTube link box open?
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // the mobile hamburger menu
@@ -260,6 +283,10 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
   const [showStats, setShowStats] = useState(false); // the Stats panel
   const [statsData, setStatsData] = useState<Stats | null>(null); // snapshot shown in the Stats panel
+  const [showPricing, setShowPricing] = useState(false); // the Athenia Pro upgrade screen
+  const [showCustomize, setShowCustomize] = useState(false); // the palette / customization panel
+  const [theme, setTheme] = useState<ThemeChoice>(DEFAULT_THEME); // font + palette choice
+  const [isPro, setIsPro] = useState(false); // does this account have an active subscription?
   const [streak, setStreak] = useState<Streak | null>(null); // daily streak shown under the title
   const [showStreakInfo, setShowStreakInfo] = useState(false); // the streak's "i" reward popover
   const [dragging, setDragging] = useState(false); // a file is being dragged over the text box
@@ -323,6 +350,25 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [accountMenuOpen]);
 
+  // Pre-paint: hydrate who-am-I and Pro state from the last visit's cache so
+  // the profile button and "Athenia Pro" title don't blink out on every
+  // navigation while the real checks run. Verified (and re-cached) just below.
+  useLayoutEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("atheniaAuthCache");
+      if (!raw) return;
+      const c = JSON.parse(raw);
+      /* eslint-disable react-hooks/set-state-in-effect -- pre-paint cache hydration */
+      if (typeof c.email === "string") setAuthEmail(c.email);
+      if (typeof c.id === "string") setAuthUserId(c.id);
+      if (typeof c.avatar === "string") setAuthAvatar(c.avatar);
+      if (c.pro === true && typeof c.id === "string") setIsPro(true);
+      /* eslint-enable react-hooks/set-state-in-effect */
+    } catch {
+      // no cache — normal first visit
+    }
+  }, []);
+
   // Track the signed-in user (email + photo) for the account button
   useEffect(() => {
     if (!authClient) return;
@@ -336,6 +382,19 @@ export default function Home() {
       setAuthAvatar(
         (meta.avatar_url as string) ?? (meta.picture as string) ?? null
       );
+      try {
+        if (user?.email) {
+          const prev = JSON.parse(sessionStorage.getItem("atheniaAuthCache") ?? "{}");
+          sessionStorage.setItem("atheniaAuthCache", JSON.stringify({
+            email: user.email,
+            id: user.id,
+            avatar: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
+            pro: prev.id === user.id ? prev.pro === true : false
+          }));
+        } else {
+          sessionStorage.removeItem("atheniaAuthCache");
+        }
+      } catch { /* cache is best-effort */ }
     };
     authClient.auth.getUser().then(({ data }) => {
       if (active) apply(data.user);
@@ -389,7 +448,7 @@ export default function Home() {
     if (text !== "" && !audioUploading) return; // nothing using the dots right now
     const id = setInterval(() => {
       setDotCount((c) => (c === 3 ? 1 : c + 1));
-    }, 400);
+    }, 800); // slow, calm tick — fast dots felt stressful
     return () => clearInterval(id); // stop the timer when we're done
   }, [text, audioUploading]);
 
@@ -502,11 +561,56 @@ export default function Home() {
     };
   }, [authClient, authUserId]);
 
+  // If the page unmounts mid-recording, stop the recorder and release the mic.
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      cancelAnimationFrame(vizRafRef.current);
+      audioCtxRef.current?.close().catch(() => {});
+      const rec = mediaRecorderRef.current;
+      if (rec && rec.state !== "inactive") {
+        rec.onstop = null; // don't try to upload from a dead page
+        rec.stop();
+        rec.stream.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  // Is this account Pro? RLS lets a user read only their own subscription row.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!authClient || !authUserId) {
+        if (active) setIsPro(false); // signed out -> definitely not Pro
+        return;
+      }
+      const { data } = await authClient
+        .from("subscriptions")
+        .select("status")
+        .eq("user_id", authUserId)
+        .maybeSingle();
+      if (!active) return;
+      const pro = data?.status === "active" || data?.status === "trialing";
+      setIsPro(pro);
+      try {
+        const prev = JSON.parse(sessionStorage.getItem("atheniaAuthCache") ?? "{}");
+        if (prev.id === authUserId) {
+          sessionStorage.setItem("atheniaAuthCache", JSON.stringify({ ...prev, pro }));
+        }
+      } catch { /* best-effort */ }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [authClient, authUserId]);
+
   // Streak lives in localStorage, so it can only be read once we're in the
   // browser — this one-time setState is intentional.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    /* eslint-disable react-hooks/set-state-in-effect */
     setStreak(loadStats().streak);
+    setTheme(loadTheme()); // panel state only; ThemeLoader already applied it
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   // Close the streak's "i" popover when clicking anywhere outside it.
@@ -835,7 +939,7 @@ export default function Home() {
   async function runGeneration(payload: {
     text?: string;
     images?: string[];
-    audioUrl?: string;
+    audioPath?: string;
     audioName?: string;
     youtube?: string;
   }) {
@@ -859,7 +963,7 @@ export default function Home() {
     recordGeneration(
       payload.images?.length
         ? "image"
-        : payload.audioUrl || payload.youtube
+        : payload.audioPath || payload.youtube
           ? "audio"
           : "text"
     );
@@ -1032,7 +1136,7 @@ export default function Home() {
 
   // Upload the single audio/video file straight to Supabase Storage, so it
   // never rides through the API request body (dodges Vercel's ~4.5 MB cap).
-  async function addAudio(files: FileList | null) {
+  async function addAudio(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
     const file = files[0]; // only one audio/video at a time
     if (file.size > 25 * 1024 * 1024) {
@@ -1052,7 +1156,6 @@ export default function Home() {
       const path = `${crypto.randomUUID()}.${ext}`;
       // Upload via XHR so the loading bar reflects real upload progress.
       await uploadAudioWithProgress(file, path, setAudioProgress);
-      const { data: pub } = supabase.storage.from("audio").getPublicUrl(path);
 
       const prev = audioFiles[0]; // this file replaces any previous one
       setYoutubeUrl(""); // a file and a link are mutually exclusive
@@ -1060,7 +1163,6 @@ export default function Home() {
         {
           name: file.name,
           previewUrl: URL.createObjectURL(file),
-          remoteUrl: pub.publicUrl,
           path,
           isVideo: (file.type || "").startsWith("video"),
           sig
@@ -1078,13 +1180,96 @@ export default function Home() {
     }
   }
 
+  // Record straight from the microphone (e.g. a lecture). Stopping turns the
+  // recording into a normal file and sends it through the same upload flow as
+  // a picked file.
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop(); // onstop below does the rest
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Chrome/Firefox record webm/opus; Safari records mp4 (m4a). Whisper
+      // accepts both.
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(
+        (t) => MediaRecorder.isTypeSupported(t)
+      );
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recordChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordChunksRef.current.push(e.data);
+      };
+
+      // Wire the mic into an analyser and bounce the bars off the live level
+      // (dynamic-island style). Nothing is connected to the speakers — no echo.
+      const audioCtx = new AudioContext();
+      audioCtxRef.current = audioCtx;
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+      const freq = new Uint8Array(analyser.frequencyBinCount);
+      const animate = () => {
+        vizRafRef.current = requestAnimationFrame(animate);
+        const bars = vizBarsRef.current?.children;
+        if (!bars?.length) return; // bars not rendered yet
+        analyser.getByteFrequencyData(freq);
+        // One frequency band per bar, drawn from the voice range (low bins).
+        const per = Math.floor(40 / bars.length);
+        for (let b = 0; b < bars.length; b++) {
+          let sum = 0;
+          for (let i = b * per; i < (b + 1) * per; i++) sum += freq[i];
+          const level = sum / per / 255; // 0..1
+          (bars[b] as HTMLElement).style.height = `${4 + Math.round(level * 24)}px`;
+        }
+      };
+      animate();
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop()); // release the mic (browser tab indicator off)
+        if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+        cancelAnimationFrame(vizRafRef.current);
+        audioCtxRef.current?.close().catch(() => {});
+        audioCtxRef.current = null;
+        setRecording(false);
+        const type = recorder.mimeType || "audio/webm";
+        const ext = type.includes("mp4") ? "m4a" : "webm";
+        const blob = new Blob(recordChunksRef.current, { type });
+        recordChunksRef.current = [];
+        if (blob.size === 0) return; // nothing captured
+        const stamp = new Date().toLocaleString(undefined, {
+          month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+        });
+        addAudio([new File([blob], `Recording ${stamp}.${ext}`, { type })]);
+      };
+      recorder.start(1000); // collect data every second
+      mediaRecorderRef.current = recorder;
+      setGenError(null);
+      setRecordSeconds(0);
+      setRecording(true);
+      recordTimerRef.current = setInterval(
+        () => setRecordSeconds((s) => s + 1),
+        1000
+      );
+    } catch (err) {
+      console.error("[record] failed:", (err as Error)?.message ?? err);
+      // DRAFT COPY — William to reword.
+      setGenError("Couldn't access your microphone. Check your browser permissions.");
+    }
+  }
+
   // Generate a quiz from the uploaded audio/video, or from a YouTube link's captions
   async function generateFromAudio() {
     if (audioFiles.length > 0) {
+      const upload = audioFiles[0];
       await runGeneration({
-        audioUrl: audioFiles[0].remoteUrl,
-        audioName: audioFiles[0].name
+        audioPath: upload.path,
+        audioName: upload.name
       });
+      // The server deletes the file right after transcribing it, so this upload
+      // can't be generated from again — clear it rather than leave a dead entry.
+      URL.revokeObjectURL(upload.previewUrl);
+      setAudioFiles((prev) => prev.filter((a) => a.path !== upload.path));
       return;
     }
     const yt = youtubeUrl.trim();
@@ -1429,6 +1614,16 @@ export default function Home() {
       </button>
     );
 
+  // Pick a font/palette in the customization panel: apply live and persist.
+  const pickTheme = (patch: Partial<ThemeChoice>) => {
+    setTheme((prev) => {
+      const next = { ...prev, ...patch };
+      applyTheme(next);
+      saveTheme(next);
+      return next;
+    });
+  };
+
   // The streak bar under the title: a thin rounded track that fills toward the
   // next reward milestone. Light orange normally; light blue while a freeze is
   // banked (5 quizzes in a day) and protecting the streak.
@@ -1436,7 +1631,16 @@ export default function Home() {
     if (!streak) return null; // not read from localStorage yet
     const days = currentStreak(streak);
     const frozen = isFrozen(streak);
-    const { target, reward } = nextMilestone(days);
+    const { target, reward } = nextMilestone(days, streak.rewarded);
+    const deadlines = streakDeadlines(streak);
+    const freezeLeft = freezeQuizzesLeft(streak);
+    // Ceil so a fresh 48h window reads "48h", not "47h"; switch to minutes in
+    // the last hour so it never sits on a misleading "0h".
+    const timeLeft = (ms: number) => {
+      const left = Math.max(0, ms - Date.now());
+      if (left < 3_600_000) return `${Math.ceil(left / 60_000)}m`;
+      return `${Math.ceil(left / 3_600_000)}h`;
+    };
     const fill = frozen ? STREAK_FROZEN_BLUE : STREAK_ORANGE;
 
     return (
@@ -1461,7 +1665,7 @@ export default function Home() {
           >
             <div
               style={{
-                width: `${streakProgress(days) * 100}%`,
+                width: `${streakProgress(days, streak.rewarded) * 100}%`,
                 height: "100%",
                 borderRadius: 2,
                 backgroundColor: fill,
@@ -1517,7 +1721,22 @@ export default function Home() {
                 zIndex: 900
               }}
             >
-              {target} days - {reward} days premium
+              <div>{target} days - {reward} days Pro</div>
+              {frozen && (
+                <div style={{ marginTop: 4, color: STREAK_FROZEN_BLUE }}>
+                  Streak freeze ready
+                </div>
+              )}
+              {freezeLeft !== null && freezeLeft > 0 && (
+                <div style={{ marginTop: 4, opacity: 0.7 }}>
+                  Streak freeze in {freezeLeft} quiz{freezeLeft === 1 ? "" : "zes"}
+                </div>
+              )}
+              {deadlines && days > 0 && (
+                <div style={{ marginTop: 4, opacity: 0.7 }}>
+                  Streak decays in {timeLeft(deadlines.decayAt)}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1607,6 +1826,37 @@ export default function Home() {
           zIndex: 1000
         }}
       >
+        {/* Upgrade indicator: a thick muted-green up arrow beside the profile
+            pill. Signed-in users only — there's no account to upgrade otherwise.
+            Opens the Athenia Pro screen. */}
+        {!isMobile && authEmail && !isPro && (
+          <button
+            onClick={() => setShowPricing(true)}
+            title="Upgrade to Athenia Pro"
+            aria-label="Upgrade to Athenia Pro"
+            style={{
+              width: 48,
+              height: 40, // matches the account pill beside it
+              marginRight: -10, // tuck in close to the profile pill
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              alignSelf: "center",
+              padding: 0,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer"
+            }}
+          >
+            <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+              {/* chunky block arrow, filled — Athenia's light blue */}
+              <path
+                d="M12 3 L20 11 H15.5 V21 H8.5 V11 H4 Z"
+                fill={STREAK_FROZEN_BLUE}
+              />
+            </svg>
+          </button>
+        )}
         {!isMobile && <AuthButton />}
         {!isMobile &&
         [
@@ -1701,7 +1951,170 @@ export default function Home() {
             </svg>
           </button>
         )}
+
+        {/* Customize — circular button with a minimal palette + brush icon.
+            Not wired to anything yet (the customization panel comes later). */}
+        {!isMobile && (
+          <button
+            onClick={() => setShowCustomize(true)}
+            aria-label="Customize"
+            title="Customize"
+            style={{
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "50%",
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              cursor: "pointer"
+            }}
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {/* classic painter's palette: blob with a thumb-hole notch at the
+                  bottom, four paint wells — fills the whole button */}
+              <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
+              <circle cx="13.5" cy="6.5" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="17.5" cy="10.5" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="8.5" cy="7.5" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="6.5" cy="12.5" r="1.4" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+        )}
       </div>
+
+      {/* Customization panel — fonts and color palettes */}
+      {showCustomize && (
+        <div
+          onClick={() => setShowCustomize(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 380,
+              maxWidth: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontWeight: "bold", fontSize: 22, textAlign: "center", marginBottom: 18 }}>
+              Customize
+            </div>
+
+            <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 8 }}>Font</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {FONTS.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => pickTheme({ font: f.id })}
+                  style={{
+                    flex: 1,
+                    padding: "10px 0",
+                    border:
+                      theme.font === f.id ? `2px solid ${STREAK_FROZEN_BLUE}` : "1px solid #888",
+                    borderRadius: 3,
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 15,
+                    fontFamily: f.css, // each button previews its own font
+                    cursor: "pointer"
+                  }}
+                >
+                  {f.name}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 8px" }}>Palette</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              {PALETTES.map((pal) => (
+                <button
+                  key={pal.id}
+                  onClick={() => pickTheme({ palette: pal.id })}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "10px 0 8px",
+                    border:
+                      theme.palette === pal.id
+                        ? `2px solid ${STREAK_FROZEN_BLUE}`
+                        : "1px solid #888",
+                    borderRadius: 3,
+                    background: "transparent",
+                    color: "inherit",
+                    cursor: "pointer"
+                  }}
+                >
+                  {/* swatch: the palette's background with its text colour dot */}
+                  <span
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: 3,
+                      background: pal.bg,
+                      border: "1px solid #888",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center"
+                    }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.fg }} />
+                  </span>
+                  <span style={{ fontSize: 12 }}>{pal.name}</span>
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => pickTheme({ ...DEFAULT_THEME })}
+              style={{
+                marginTop: 18,
+                width: "100%",
+                padding: "8px 0",
+                border: "1px solid #888",
+                borderRadius: 3,
+                background: "transparent",
+                color: "inherit",
+                fontSize: 13,
+                cursor: "pointer",
+                opacity: 0.8
+              }}
+            >
+              Reset to default
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Athenia Pro upgrade screen */}
+      <PricingModal open={showPricing} onClose={() => setShowPricing(false)} isPro={isPro} />
 
       {/* Stats panel — a centered card; click the backdrop to close */}
       {showStats && statsData && (
@@ -2214,10 +2627,11 @@ export default function Home() {
           fontSize: 64,
           marginTop: 0,      // sit up near the top edge
           marginBottom: 12,
-          transform: "translateY(10px)"  // nudge just the text down, without shifting the layout below
+          transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
+          color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
         }}
       >
-        Athenia
+        {isPro ? "Athenia Pro" : "Athenia"}
       </h1>
 
       {renderStreak()}
@@ -3035,6 +3449,74 @@ export default function Home() {
                   <line x1="27" y1="3.5" x2="27" y2="9.5" />
                   <line x1="24" y1="6.5" x2="30" y2="6.5" />
                 </svg>
+              </button>
+
+              {/* Record box — records the microphone (e.g. a live lecture) */}
+              <button
+                onClick={toggleRecording}
+                disabled={loading || audioUploading}
+                title={recording ? "Stop recording" : "Record audio"}
+                aria-pressed={recording}
+                style={{
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  width: 96,
+                  height: 96,
+                  background: "transparent",
+                  border: recording ? "2px solid #e0776b" : "2px solid #888",
+                  borderRadius: 3,
+                  cursor: loading ? "default" : "pointer",
+                  color: "inherit"
+                }}
+              >
+                {recording ? (
+                  <>
+                    {/* live level bars — heights are driven straight from the mic
+                        by the analyser loop in toggleRecording */}
+                    <div
+                      ref={vizBarsRef}
+                      style={{
+                        display: "flex",
+                        alignItems: "center", // bars grow from the middle out
+                        gap: 3,
+                        height: 28
+                      }}
+                    >
+                      {[0, 1, 2, 3, 4].map((i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: 4,
+                            height: 4,
+                            borderRadius: 2,
+                            background: "#e0776b",
+                            transition: "height 80ms ease" // smooths the jumps between frames
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 14, color: "#e0776b", fontVariantNumeric: "tabular-nums" }}>
+                      {Math.floor(recordSeconds / 60)}:{String(recordSeconds % 60).padStart(2, "0")}
+                    </span>
+                  </>
+                ) : (
+                  // record icon: a dot in a circle
+                  <svg
+                    width="44"
+                    height="44"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+                  </svg>
+                )}
               </button>
 
               {/* YouTube box — click to reveal a link box */}

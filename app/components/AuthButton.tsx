@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 
@@ -47,7 +47,20 @@ export default function AuthButton() {
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false); // is the dropdown showing?
   const [imgError, setImgError] = useState(false); // Google avatar failed to load (often a 429 rate-limit)
+  // Last visit's pill (name + avatar), shown pre-paint so the button doesn't
+  // blink out on every navigation while the real session check runs.
+  const [cached, setCached] = useState<{ name: string; avatar: string | null } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("atheniaPillCache");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-paint cache hydration
+      if (raw) setCached(JSON.parse(raw));
+    } catch {
+      // no cache — first visit
+    }
+  }, []);
 
   useEffect(() => {
     if (!supabase) return;
@@ -58,6 +71,16 @@ export default function AuthButton() {
       setUser(data.user ?? null);
       setImgError(false);
       setReady(true);
+      try {
+        if (data.user) {
+          sessionStorage.setItem("atheniaPillCache", JSON.stringify({
+            name: displayName(data.user),
+            avatar: avatarUrl(data.user)
+          }));
+        } else {
+          sessionStorage.removeItem("atheniaPillCache");
+        }
+      } catch { /* best-effort */ }
     });
 
     // Keep in sync if the user signs in/out in another tab.
@@ -101,9 +124,24 @@ export default function AuthButton() {
     setUser(null);
   }
 
-  // Nothing to show until Supabase is configured, and avoid a flash of the
-  // wrong state before we know if they're logged in.
-  if (!supabase || !ready) return null;
+  // Nothing to show until Supabase is configured. While the session check is
+  // still running, show last visit's pill (non-interactive) instead of nothing.
+  if (!supabase) return null;
+  if (!ready) {
+    if (!cached) return null;
+    return (
+      <div style={{ ...pill, cursor: "default" }}>
+        {cached.avatar ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={cached.avatar} alt="" width={24} height={24} style={{ borderRadius: "50%", display: "block" }} />
+        ) : null}
+        <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {cached.name}
+        </span>
+        <span aria-hidden style={{ fontSize: 12, lineHeight: 1 }}>▾</span>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
