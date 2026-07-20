@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { hasActiveGrant } from "@/lib/proGrants";
 
 // A user's subscription, mirrored from Stripe into the `subscriptions` table by
 // the webhook. The app reads this to decide who's Pro; Stripe stays the source
@@ -48,6 +49,10 @@ export async function upsertSubscription(row: {
 }
 
 // Is this user currently Pro? Server-side check via the service-role client.
+//
+// Two ways to be Pro: a live Stripe subscription, or unexpired Pro time earned
+// from streak milestones. Stripe is checked first because it's the common case
+// and the paid one.
 export async function isUserPro(userId: string): Promise<boolean> {
   if (!supabaseAdmin) return false;
   const { data } = await supabaseAdmin
@@ -55,5 +60,6 @@ export async function isUserPro(userId: string): Promise<boolean> {
     .select("status")
     .eq("user_id", userId)
     .maybeSingle();
-  return isProStatus(data?.status);
+  if (isProStatus(data?.status)) return true;
+  return hasActiveGrant(userId);
 }

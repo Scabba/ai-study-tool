@@ -32,7 +32,7 @@ FEATURES:
 - Rechallenge: after submitting with wrong answers, practise those concepts with 2x as many fresh questions (capped at 10), repeating until mastered.
 - Instant feedback mode (in settings): reveals right/wrong as you answer instead of at submit.
 - Stats: questions generated, quizzes completed, rechallenges, hints taken, most used generator, average grade, and more.
-- Streak: submitting any quiz completes the day. Completing 5 quizzes in one day banks a freeze that protects the streak for one missed day (the bar turns light blue when frozen). Milestones earn future Pro days: 7 days -> 3, 14 -> 3, 30 -> 4, 60 -> 5, then 5 every 30 days.
+- Streak: submitting any quiz completes the day. Completing 5 quizzes in one day banks a freeze that protects the streak for one missed day (the bar turns light blue when frozen). Milestones grant free Athenia Pro straight away, for a limited number of days: 7-day streak -> 3 days of Pro, 14 -> 3, 30 -> 4, 60 -> 5, then 5 more every 30 days. Each milestone pays once ever, and claiming another while Pro is still running adds to the end instead of replacing it. The time remaining shows in the streak's "i" popover. You must be signed in to earn it.
 - Google sign-in syncs settings, stats, and quiz history across devices.
 
 PLANS AND LIMITS:

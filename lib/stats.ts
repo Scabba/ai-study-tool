@@ -366,8 +366,11 @@ export function recordHint() {
   save(s);
 }
 
-// Roll the streak forward for a submitted quiz (mutates `st`).
-function advanceStreak(st: Streak) {
+// Roll the streak forward for a submitted quiz (mutates `st`). Returns the
+// milestone day just reached, or 0 — the caller uses it to claim the Pro days
+// from the server, which is what actually grants them. `premiumDays` below is
+// only a local tally for display; the server is the authority (lib/proGrants).
+function advanceStreak(st: Streak): number {
   const now = Date.now();
   const today = estDayKey(now);
 
@@ -385,8 +388,9 @@ function advanceStreak(st: Streak) {
     if (reward > 0 && st.current > st.rewarded) {
       st.premiumDays += reward;
       st.rewarded = st.current;
+      return st.current;
     }
-    return;
+    return 0;
   }
 
   // Same day: further quizzes grind toward a freeze. Only one freeze exists at
@@ -399,21 +403,24 @@ function advanceStreak(st: Streak) {
       st.freezeProgress = 0;
     }
   }
+  return 0; // freezes aren't milestones
 }
 
 // A quiz was submitted/graded at `gradePercent`, on grade level `grade`, with an
 // estimated `subject` (or null if it couldn't be guessed).
+// Returns the streak milestone just reached (0 if none), so the caller can ask
+// the server to grant the Pro days for it.
 export function recordCompletion(
   gradePercent: number,
   grade: string,
   subject: string | null,
   items: QuizItem[]
-) {
+): number {
   const s = loadStats();
   s.quizzesCompleted += 1;
   s.gradeSum += gradePercent;
   s.gradeCount += 1;
-  advanceStreak(s.streak);
+  const milestoneReached = advanceStreak(s.streak);
   s.difficultyCounts[grade] = (s.difficultyCounts[grade] ?? 0) + 1;
   if (subject) s.subjectCounts[subject] = (s.subjectCounts[subject] ?? 0) + 1;
   const record: QuizRecord = {
@@ -428,6 +435,7 @@ export function recordCompletion(
   };
   s.history = [record, ...s.history].slice(0, HISTORY_CAP);
   save(s);
+  return milestoneReached;
 }
 
 // Rename a quiz in the history.

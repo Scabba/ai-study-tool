@@ -304,6 +304,9 @@ export default function Home({
   const [showCustomize, setShowCustomize] = useState(false); // the palette / customization panel
   const [theme, setTheme] = useState<ThemeChoice>(DEFAULT_THEME); // font + palette choice
   const [isPro, setIsPro] = useState(initialIsPro); // does this account have an active subscription?
+  // When streak-earned Pro runs out (ISO string), or null if none is banked.
+  // The server owns this — see lib/proGrants.ts — the client only displays it.
+  const [proUntil, setProUntil] = useState<string | null>(null);
   const [streak, setStreak] = useState<Streak | null>(null); // daily streak shown under the title
   const [showStreakInfo, setShowStreakInfo] = useState(false); // the streak's "i" reward popover
   const [dragging, setDragging] = useState(false); // a file is being dragged over the text box
@@ -582,6 +585,25 @@ export default function Home({
     };
   }, [authClient, authUserId]);
 
+  // How much streak-earned Pro is left. Separate from the subscription check
+  // above: a user can be Pro either by paying or by keeping a streak.
+  // Re-runs on sign-in/out; the route answers null for a signed-out caller, so
+  // the reset falls out of the response rather than a synchronous setState.
+  useEffect(() => {
+    let active = true;
+    fetch("/api/streak/claim")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (active) setProUntil(d?.proUntil ?? null);
+      })
+      .catch(() => {
+        // Countdown just doesn't show — not worth surfacing.
+      });
+    return () => {
+      active = false;
+    };
+  }, [authUserId]);
+
   // Streak lives in localStorage, so it can only be read once we're in the
   // browser — this one-time setState is intentional.
   useEffect(() => {
@@ -807,8 +829,27 @@ export default function Home({
       const quizText = items
         .map((it) => `${it.question} ${it.options ? Object.values(it.options).join(" ") : ""}`)
         .join(" ");
-      recordCompletion(pct, gradeLabel(), classifySubject(quizText), items);
+      const milestone = recordCompletion(pct, gradeLabel(), classifySubject(quizText), items);
       setStreak(loadStats().streak); // submitting completes the day
+      // Hitting a milestone earns Pro days, but only the server can grant them
+      // — the streak itself lives in localStorage, so a client-side award would
+      // be free Pro for anyone with devtools. Fire-and-forget: if it fails the
+      // milestone stays unclaimed locally and the next submit retries it.
+      if (milestone > 0 && authUserId) {
+        fetch("/api/streak/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ milestone })
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (d?.proUntil) setProUntil(d.proUntil);
+            if (d?.claimed) setIsPro(true); // Pro starts immediately
+          })
+          .catch(() => {
+            /* retried on the next submit */
+          });
+      }
     }
 
     patchQuiz(mode, { submittedRounds: activeRound + 1 }); // this round is now graded
@@ -1619,6 +1660,18 @@ export default function Home({
       if (left < 3_600_000) return `${Math.ceil(left / 60_000)}m`;
       return `${Math.ceil(left / 3_600_000)}h`;
     };
+    // Earned Pro runs to days, which timeLeft would render as an unreadable
+    // "104h". Days once there's more than one left, hours below that.
+    const proLeft = (iso: string): string | null => {
+      const left = new Date(iso).getTime() - Date.now();
+      if (left <= 0) return null;
+      if (left < 3_600_000) return `${Math.ceil(left / 60_000)}m`;
+      if (left < 86_400_000) return `${Math.ceil(left / 3_600_000)}h`;
+      const d = Math.floor(left / 86_400_000);
+      const h = Math.floor((left % 86_400_000) / 3_600_000);
+      return h > 0 ? `${d}d ${h}h` : `${d}d`;
+    };
+    const proRemaining = proUntil ? proLeft(proUntil) : null;
     const fill = frozen ? STREAK_FROZEN_BLUE : STREAK_ORANGE;
 
     return (
@@ -1700,6 +1753,12 @@ export default function Home({
               }}
             >
               <div>{target} days - {reward} days Pro</div>
+              {proRemaining && (
+                // DRAFT COPY — William to reword.
+                <div style={{ marginTop: 4, color: STREAK_FROZEN_BLUE }}>
+                  Pro from your streak - {proRemaining} left
+                </div>
+              )}
               {frozen && (
                 <div style={{ marginTop: 4, color: STREAK_FROZEN_BLUE }}>
                   Streak freeze ready
