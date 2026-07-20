@@ -6,15 +6,16 @@ import {
   clientIp,
   addAudioSeconds,
   audioSecondsUsed,
-  PRO_AUDIO_SECONDS_PER_MONTH
+  PRO_AUDIO_SECONDS_PER_WEEK
 } from "@/lib/rateLimit";
+import { FREE_DAILY_QUIZZES, PRO_AUDIO_HOURS_PER_WEEK } from "@/lib/pricing";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { isUserPro } from "@/lib/subscription";
 import { isHatefulInput } from "@/lib/moderation";
 
-// Signed-in Free plan: quizzes per day across text/image/YouTube (matches the
-// pricing card). Audio is Pro-only. Rechallenges and hints stay unlimited.
-const FREE_DAILY_QUIZZES = 5;
+// Signed-in Free plan: quizzes per day across text/image/YouTube. The number
+// comes from lib/pricing so the pricing card and this check can't disagree.
+// Audio is Pro-only. Rechallenges and hints stay unlimited.
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -32,7 +33,7 @@ const LIMITER_DOWN = "We couldn't start that quiz. Try again in a moment.";
 const AUDIO_PRO_ONLY = "Audio and video quizzes are an Athenia Pro feature.";
 const FREE_DAILY_MSG = `That's all ${FREE_DAILY_QUIZZES} quizzes for today. Upgrade to Athenia Pro for unlimited quizzes.`;
 // DRAFT COPY — William to reword.
-const AUDIO_MONTHLY_MSG = `You've used all ${PRO_AUDIO_SECONDS_PER_MONTH / 3600} hours of audio and video for this month. Your allowance resets on the 1st.`;
+const AUDIO_WEEKLY_MSG = `You've used all ${PRO_AUDIO_HOURS_PER_WEEK} hours of audio and video for this week. Your allowance resets Friday.`;
 // DRAFT COPY — William to reword. Worth writing this one carefully: a student
 // whose legitimate history notes trip the filter will read it, not just an abuser.
 const HATEFUL_INPUT =
@@ -755,8 +756,8 @@ export async function POST(req: Request) {
       // meter can't be read we let it through — a paying customer shouldn't be
       // turned away because our own counter is down.
       const used = await audioSecondsUsed(userId);
-      if (used !== null && used >= PRO_AUDIO_SECONDS_PER_MONTH) {
-        return ndjsonError(AUDIO_MONTHLY_MSG);
+      if (used !== null && used >= PRO_AUDIO_SECONDS_PER_WEEK) {
+        return ndjsonError(AUDIO_WEEKLY_MSG);
       }
     }
   }

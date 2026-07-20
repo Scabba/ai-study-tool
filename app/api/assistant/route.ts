@@ -1,6 +1,12 @@
 import OpenAI from "openai";
 import { signedInUserId } from "@/lib/authUser";
 import { ANON_LIMITS, bumpDaily, clientIp } from "@/lib/rateLimit";
+import { isUserPro } from "@/lib/subscription";
+import {
+  FREE_DAILY_ASSISTANT,
+  FREE_DAILY_QUIZZES,
+  PRO_AUDIO_HOURS_PER_WEEK
+} from "@/lib/pricing";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -37,8 +43,8 @@ FEATURES:
 
 PLANS AND LIMITS:
 - Signed OUT: 3 text quizzes per day; images, audio, and YouTube require signing in; limited hints and assistant messages per day.
-- Free (signed in): 5 quizzes per day. Text, image and YouTube sources. Hints, Rechallenge, history, folders, stats and streaks all included. Audio and video quizzes are Pro-only.
-- Athenia Pro: $7.99/month or $56.99/year. Unlimited quizzes, audio and video quizzes with 15 hours of transcription per month (resets on the 1st), and priority generation. Cancel anytime from the account menu.
+- Free (signed in): ${FREE_DAILY_QUIZZES} quizzes per day and ${FREE_DAILY_ASSISTANT} assistant messages per day. Text, image and YouTube sources. Hints, Rechallenge, history, folders, stats and streaks all included. Audio and video quizzes are Pro-only.
+- Athenia Pro: $7.99/month or $56.99/year. Unlimited quizzes, unlimited assistant messages, audio and video quizzes with ${PRO_AUDIO_HOURS_PER_WEEK} hours of transcription per week (resets every Friday), and priority generation. Cancel anytime from the account menu.
 - Users must be 13 or older.
 - You do NOT know any individual's plan, usage, or how much of their allowance is left — never guess or state a number for the person you're talking to. Point them at the pricing screen or Support instead.
 
@@ -74,7 +80,9 @@ export async function POST(req: Request) {
     return new Response("No message provided.", { status: 400 });
   }
 
-  // Same gate as the other AI routes — this one spends the OpenAI key too.
+  // Same gate as the other AI routes — this one spends the OpenAI key too, and
+  // a long chat costs more than a whole quiz: the system prompt is ~1,100
+  // tokens on every message and the history grows on top of it.
   const userId = await signedInUserId();
   if (!userId) {
     const limit = await bumpDaily("assistant", clientIp(req), ANON_LIMITS.assistant);
@@ -83,6 +91,17 @@ export async function POST(req: Request) {
       const message = limit.unavailable
         ? "The assistant isn't available right now. Try again in a moment."
         : "You've used all of today's assistant messages. Sign in to keep chatting.";
+      return new Response(message, { status: limit.unavailable ? 503 : 429 });
+    }
+  } else if (!(await isUserPro(userId))) {
+    // Free accounts were previously uncapped here, so one free user could chat
+    // indefinitely at up to ~1c a message.
+    const limit = await bumpDaily("assistant", `u:${userId}`, FREE_DAILY_ASSISTANT);
+    if (!limit.allowed) {
+      // DRAFT COPY — William to reword.
+      const message = limit.unavailable
+        ? "The assistant isn't available right now. Try again in a moment."
+        : `That's all ${FREE_DAILY_ASSISTANT} assistant messages for today. Upgrade to Athenia Pro to keep chatting.`;
       return new Response(message, { status: limit.unavailable ? 503 : 429 });
     }
   }
