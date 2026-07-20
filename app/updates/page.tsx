@@ -6,9 +6,8 @@ export const metadata = { title: "Updates — Athenia" };
 const UPDATES = [
   {
     version: "0.6",
-    date: "July 19",
+    date: "July 20",
     items: [
-      "Mobile UI rework to improve accessibility",
       "Customizable fonts and color palettes",
       "Monetization with Athenia Pro",
       "Record audio to turn into questions with Athenia Pro",

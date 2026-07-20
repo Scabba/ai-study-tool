@@ -7,7 +7,6 @@ import { useState, useEffect } from "react";
 const APP_VERSION = "0.6";
 
 const WHATS_NEW = [
-  "📱 Mobile UI rework to improve accessibility",
   "🎨 Customizable fonts and color palettes",
   "💸 Monetization with Athenia Pro",
   "🎙️ Record audio to turn into questions with Athenia Pro",
