@@ -83,10 +83,13 @@ export default function HistoryPage() {
       }
       try {
         const client = createClient();
-        const { data } = await client.auth.getUser();
-        if (!active || !data.user) return;
-        auth.current = { client, userId: data.user.id };
-        const cloud = await fetchStats(client, data.user.id);
+        // getSession reads the locally stored session (no network), so a flaky
+        // connection can't break the page — RLS still enforces access.
+        const { data } = await client.auth.getSession();
+        const user = data.session?.user;
+        if (!active || !user) return;
+        auth.current = { client, userId: user.id };
+        const cloud = await fetchStats(client, user.id);
         if (active && cloud) {
           setRecords(cloud.history);
           setFolders(cloud.folders);

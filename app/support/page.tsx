@@ -50,6 +50,22 @@ export default function SupportPage() {
         </p>
       </section>
 
+      <section
+        style={{
+          marginTop: 16,
+          padding: 20,
+          border: "1px solid #888",
+          borderRadius: 3
+        }}
+      >
+        <p style={{ margin: 0 }}>
+          If you are unhappy with your experience with Athenia Pro, you may
+          request a full refund within 7 days of purchase. You may also cancel
+          your subscription at any time, with Pro features continuing to last
+          for the remainder of the subscription.
+        </p>
+      </section>
+
       <p style={{ textAlign: "right", marginTop: 8, fontSize: 14, opacity: 0.75 }}>
         Contact:{" "}
         <a
@@ -58,6 +74,29 @@ export default function SupportPage() {
         >
           williambilodeau55@gmail.com
         </a>
+      </p>
+
+      {/* Legal */}
+      <p
+        style={{
+          textAlign: "center",
+          marginTop: 40,
+          fontSize: 14,
+          opacity: 0.7,
+          display: "flex",
+          justifyContent: "center",
+          gap: 10
+        }}
+      >
+        <Link href="/privacy" style={{ color: "#60a5fa" }}>
+          Privacy Policy
+        </Link>
+        <span aria-hidden style={{ opacity: 0.5 }}>
+          ·
+        </span>
+        <Link href="/terms" style={{ color: "#60a5fa" }}>
+          Terms of Service
+        </Link>
       </p>
 
     </main>
