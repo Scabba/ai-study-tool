@@ -416,54 +416,28 @@ export default function HistoryPage() {
                 }}
               />
             ) : (
-              <span
+              <Link
                 key={f.id}
-                style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}
+                href={`/history/${f.id}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                  height: 38,
+                  padding: "0 14px",
+                  borderRadius: 3,
+                  border: "2px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 15,
+                  textDecoration: "none",
+                  whiteSpace: "nowrap"
+                }}
               >
-                <Link
-                  href={`/history/${f.id}`}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    height: 38,
-                    padding: "0 32px 0 14px", // room for the rename pencil
-                    borderRadius: 3,
-                    border: "2px solid #888",
-                    background: "transparent",
-                    color: "inherit",
-                    fontSize: 15,
-                    textDecoration: "none",
-                    whiteSpace: "nowrap"
-                  }}
-                >
-                  <FolderIcon />
-                  {f.name}
-                </Link>
-                <button
-                  onClick={() => {
-                    setFolderName(f.name);
-                    setEditingFolderId(f.id);
-                  }}
-                  aria-label={`Rename ${f.name}`}
-                  title="Rename folder"
-                  style={{
-                    position: "absolute",
-                    right: 8,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    display: "inline-flex",
-                    border: "none",
-                    background: "transparent",
-                    color: "inherit",
-                    opacity: 0.5,
-                    padding: 0,
-                    cursor: "pointer"
-                  }}
-                >
-                  <PencilIcon size={13} />
-                </button>
-              </span>
+                <FolderIcon />
+                {f.name}
+              </Link>
             )
           )}
 

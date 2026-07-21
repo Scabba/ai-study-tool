@@ -179,7 +179,9 @@ export default function FolderPage() {
               textAlign: "center",
               fontWeight: "bold",
               fontSize: 34,
-              maxWidth: 400,
+              // Same 56px-per-side reservation as the title button, so the
+              // rename field can't sit under the back arrow either.
+              maxWidth: "min(400px, calc(100% - 112px))",
               width: "100%",
               background: "transparent",
               color: "inherit",
@@ -200,13 +202,27 @@ export default function FolderPage() {
               alignItems: "center",
               gap: 10,
               margin: "0 auto",
+              // The back arrow is absolutely positioned at left:0, so a long
+              // folder name would centre its way right up against it. Reserving
+              // 56px at each end keeps a gap no matter how long the name is.
+              maxWidth: "calc(100% - 112px)",
               background: "transparent",
               border: "none",
               color: "inherit",
               cursor: "pointer"
             }}
           >
-            <h1 style={{ fontWeight: "bold", fontSize: 40, margin: 0 }}>
+            <h1
+              style={{
+                fontWeight: "bold",
+                fontSize: 40,
+                margin: 0,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap"
+              }}
+            >
               {folder ? folder.name : "Folder not found"}
             </h1>
             {folder && (
