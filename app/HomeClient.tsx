@@ -123,8 +123,15 @@ const restartSlot: React.CSSProperties = {
 const DIFFICULTIES = ["Middle School", "High School", "University"];
 
 // True on narrow (phone) screens. Uses matchMedia so it updates live when the
-// window is resized or rotated, and renders as desktop-first on the server.
-function useIsMobile(breakpoint = 640) {
+// window is resized or rotated.
+//
+// `serverGuess` is what the server rendered, taken from the request's
+// user-agent. It matters: this value is also what React uses for the hydration
+// render, so if it disagrees with the real screen the page paints the wrong
+// layout and visibly snaps into place a moment later. Guessing from the
+// user-agent isn't perfect, but it's right for real phones, which is where the
+// snap was ugly.
+function useIsMobile(serverGuess: boolean, breakpoint = 640) {
   return useSyncExternalStore(
     (onChange) => {
       const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
@@ -132,7 +139,7 @@ function useIsMobile(breakpoint = 640) {
       return () => mq.removeEventListener("change", onChange);
     },
     () => window.matchMedia(`(max-width: ${breakpoint}px)`).matches,
-    () => false // server / first paint: assume desktop
+    () => serverGuess
   );
 }
 
@@ -187,15 +194,13 @@ const SUBMIT_GREEN = "#3f9169";
 // Submit / grade box.
 const RECHALLENGE_YELLOW = "#d9b45a";
 const RECHALLENGE_BTN = "#c79a34";
-// Desktop only: total vertical space between the title and the page's content,
-// which the streak sits centered inside. These preserve where the content
-// already sat — text was 12 (title) + 20 (streak) + 66 (box), the other two
-// 12 + 20 + 48 — now split evenly above and below the streak instead.
-const DESKTOP_TITLE_GAP: Record<Mode, number> = {
-  text: 98,
-  image: 80,
-  audio: 80
-};
+// Desktop spacing around the streak. It sits just under the title (12, which
+// reads as 2 because the title is nudged down 10px by a transform), and the
+// rest of the gap goes below it. One pair of numbers for every tab, so the
+// text box's top edge lines up with the image and audio boxes — they used to
+// differ by 18 because the text page carried a 66px top margin and the others 48.
+const DESKTOP_STREAK_ABOVE = 12;
+const DESKTOP_STREAK_BELOW = 68;
 
 // Hint theme: the same yellow used for the answer-selection dot, so the
 // lightbulb and hint text read as one "yellow" accent.
@@ -242,10 +247,12 @@ export type InitialAuth = {
 
 export default function Home({
   initialAuth,
-  initialIsPro
+  initialIsPro,
+  initialIsMobile
 }: {
   initialAuth: InitialAuth;
   initialIsPro: boolean;
+  initialIsMobile: boolean;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<Mode>("text"); // which page tab is active
@@ -283,7 +290,7 @@ export default function Home({
   const [authAvatar, setAuthAvatar] = useState<string | null>(initialAuth?.avatar ?? null); // signed-in user's photo, if any
   const [authUserId, setAuthUserId] = useState<string | null>(initialAuth?.id ?? null); // signed-in user's id (for account-wide settings)
   const [authClient] = useState(() => (SUPABASE_CONFIGURED ? createClient() : null));
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile(initialIsMobile);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
   const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null); // video shown fullscreen
   // One quiz per tab; the active tab's is what the page renders.
@@ -1703,10 +1710,8 @@ export default function Home({
           // Mobile uses 32/22 rather than 27/27 because the title's
           // translateY(10px) shifts it down visually without changing layout,
           // eating 10px of the gap above.
-          // +5/-5 keeps the total gap identical while shifting the streak down
-          // by the 10px the transform steals, so above and below match visually.
-          marginTop: isMobile ? 32 : DESKTOP_TITLE_GAP[mode] / 2 + 5,
-          marginBottom: isMobile ? 22 : DESKTOP_TITLE_GAP[mode] / 2 - 5
+          marginTop: isMobile ? 32 : DESKTOP_STREAK_ABOVE,
+          marginBottom: isMobile ? 22 : DESKTOP_STREAK_BELOW
         }}
       >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
@@ -3792,7 +3797,7 @@ export default function Home({
                 </p>
               </div>
             ) : (
-              <p style={{ opacity: 0.7, marginTop: 12 }}>
+              <p style={{ opacity: 0.7, marginTop: 12, textAlign: "center" }}>
                 Upload audio or a YouTube link to generate questions
               </p>
             )}

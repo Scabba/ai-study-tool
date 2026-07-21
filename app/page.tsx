@@ -1,7 +1,18 @@
+import { headers } from "next/headers";
 import HomeClient, { type InitialAuth } from "./HomeClient";
 import { signedInUser } from "@/lib/authUser";
 import { isUserPro } from "@/lib/subscription";
 import { createClient } from "@/lib/supabase/server";
+
+// Which layout to render before the browser can measure itself. Without this
+// the server always assumed desktop, so a phone painted the desktop layout and
+// snapped to mobile on hydration — the "messed up UI for a split second".
+// A user-agent guess is imperfect but correct for real phones; matchMedia takes
+// over immediately after and stays authoritative.
+async function guessMobile(): Promise<boolean> {
+  const ua = (await headers()).get("user-agent") ?? "";
+  return /Android|iPhone|iPod|(iPad|Windows Phone|BlackBerry|Mobile)/i.test(ua);
+}
 
 // The home page is a thin server shell: it reads the session cookie so the
 // first paint already knows who you are. Without this the page rendered
@@ -10,6 +21,7 @@ import { createClient } from "@/lib/supabase/server";
 // what we want — the page is per-user anyway.
 
 export default async function Page() {
+  const initialIsMobile = await guessMobile();
   const user = await signedInUser();
 
   let initialAuth: InitialAuth = null;
@@ -32,5 +44,11 @@ export default async function Page() {
     initialIsPro = await isUserPro(user.id);
   }
 
-  return <HomeClient initialAuth={initialAuth} initialIsPro={initialIsPro} />;
+  return (
+    <HomeClient
+      initialAuth={initialAuth}
+      initialIsPro={initialIsPro}
+      initialIsMobile={initialIsMobile}
+    />
+  );
 }

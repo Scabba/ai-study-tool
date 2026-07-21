@@ -477,15 +477,15 @@ export default function PricingModal({
         {/* Monthly / Yearly toggle */}
         <div
           style={{
-            display: "inline-flex",
+            // flex, not inline-flex: auto margins only centre a block-level
+            // box, so as an inline box this sat against the left edge.
+            display: "flex",
             gap: 4,
-            margin: "18px auto 0",
             padding: 4,
             border: "1px solid #888",
             borderRadius: 3,
             width: "fit-content",
-            marginLeft: "auto",
-            marginRight: "auto"
+            margin: "18px auto 0"
           }}
         >
           {(["monthly", "yearly"] as BillingCycle[]).map((c) => (
