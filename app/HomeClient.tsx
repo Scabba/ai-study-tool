@@ -1874,7 +1874,7 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          right: 68, // just left of the 40px "?" at right:20
+          right: 63, // just left of the 40px "?" at right:15
           display: "flex",
           gap: 8,
           zIndex: 1000
@@ -2235,7 +2235,7 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          right: 20,
+          right: 15,
           width: 40,
           height: 40,
           borderRadius: "50%",
@@ -2258,7 +2258,7 @@ export default function Home({
           style={{
             position: "fixed",
             top: 70,
-            right: 20,
+            right: 15,
             maxWidth: 280,
             background: "var(--background)",
             color: "var(--foreground)",
@@ -2276,7 +2276,7 @@ export default function Home({
 
       {/* Mobile account button: profile picture + caret, under the "?" */}
       {isMobile && authClient && (
-        <div ref={accountMenuRef} style={{ position: "fixed", top: 70, right: 20, zIndex: 1000 }}>
+        <div ref={accountMenuRef} style={{ position: "fixed", top: 70, right: 15, zIndex: 1000 }}>
           {authEmail ? (
             accountMenuOpen ? (
               // Expanded oval: avatar on top, then switch / log out, divided by lines
@@ -2432,7 +2432,7 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          left: 20,
+          left: 15,
           width: 40,
           height: 40,
           borderRadius: "50%",
@@ -2468,7 +2468,7 @@ export default function Home({
           style={{
             position: "fixed",
             top: 70,
-            left: 20,
+            left: 15,
             width: 300,
             background: "var(--background)",
             color: "var(--foreground)",
@@ -2681,7 +2681,7 @@ export default function Home({
           // Sized to fill the phone's width; the line is broken explicitly
           // below so "Pro" always sits under "Athenia" rather than depending
           // on where the wrap happens to land.
-          fontSize: isMobile ? 58 : 64,
+          fontSize: isMobile ? 70 : 64,
           marginTop: 0,      // sit up near the top edge
           marginBottom: 0,   // the streak owns the gap below
           lineHeight: isMobile ? 1.0 : undefined,
@@ -2744,7 +2744,7 @@ export default function Home({
 
       {/* Mobile menu: hamburger under the cog (hidden while the settings panel is open) */}
       {isMobile && !showSettings && (
-        <div ref={mobileMenuRef} style={{ position: "fixed", top: 70, left: 20, zIndex: 1000 }}>
+        <div ref={mobileMenuRef} style={{ position: "fixed", top: 70, left: 15, zIndex: 1000 }}>
           <button
             onClick={() => setMobileMenuOpen((v) => !v)}
             aria-label="Menu"
@@ -3412,7 +3412,9 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              marginTop: 48
+              // Desktop lines this up with the textarea's height; on a phone it
+              // sits just under the streak like the text page.
+              marginTop: isMobile ? 0 : 48
             }}
           >
             {/* Hidden audio/video picker (can select several at once) */}
@@ -3440,7 +3442,7 @@ export default function Home({
                 // Reserved whether or not a file is attached, so attaching one
                 // doesn't shove the buttons down. Kept as small as the preview
                 // allows — every pixel here is dead space when it's empty.
-                height: 72,
+                height: 44,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center"
@@ -3461,8 +3463,8 @@ export default function Home({
                   playsInline
                   preload="metadata"
                   style={{
-                    width: 100,
-                    height: 64, // fits the 72px reserved slot above
+                    width: 64,
+                    height: 40, // fits the 44px reserved slot above
                     objectFit: "cover",
                     border: "2px solid #888",
                     borderRadius: 3,
