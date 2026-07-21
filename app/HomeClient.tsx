@@ -1682,10 +1682,12 @@ export default function Home({
         style={{
           display: "flex",
           justifyContent: "center",
-          // Tighter on a phone than desktop, but still clearly separated from
-          // the title above and the upload box below.
-          marginTop: isMobile ? 10 : 0,
-          marginBottom: isMobile ? 18 : 20
+          // Equal above and below on mobile, so the streak sits centered
+          // between "Pro" and whatever the page puts under it. 32 not 22: the
+          // title's translateY(10px) shifts it down visually without changing
+          // layout, so it eats 10px of this gap.
+          marginTop: isMobile ? 32 : 0,
+          marginBottom: isMobile ? 22 : 20
         }}
       >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
@@ -1809,8 +1811,11 @@ export default function Home({
     ];
   };
 
+  // On mobile the cog sits at y20-60 and the menu button at y70-110, both
+  // fixed. The title has to start below them or it renders underneath the
+  // buttons — which is what made a larger title collide.
   return (
-    <main style={{ padding: isMobile ? "40px 16px" : 40 }}>
+    <main style={{ padding: isMobile ? "104px 16px 40px" : 40 }}>
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -2673,12 +2678,13 @@ export default function Home({
           fontFamily: "var(--font-playfair), Georgia, serif",
           fontStyle: "italic",
           fontWeight: "bold",
-          // "Athenia Pro" is too wide for a phone at 64. Shrink it and break the
-          // line ourselves rather than letting it overflow or wrap unpredictably.
-          fontSize: isMobile ? 46 : 64,
+          // Sized to fill the phone's width; the line is broken explicitly
+          // below so "Pro" always sits under "Athenia" rather than depending
+          // on where the wrap happens to land.
+          fontSize: isMobile ? 58 : 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: isMobile ? 6 : 12,
-          lineHeight: isMobile ? 1.02 : undefined,
+          marginBottom: 0,   // the streak owns the gap below
+          lineHeight: isMobile ? 1.0 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
           color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
         }}
@@ -2941,8 +2947,8 @@ export default function Home({
           width: "100%",
           // Lines the toolbar up with the top of the image / audio upload boxes
           // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
-          // On a phone that gap is dead space — pull the box up under the streak.
-          marginTop: isMobile ? 10 : 66,
+          // On a phone the streak's own margin provides the gap.
+          marginTop: isMobile ? 0 : 66,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
           transition: "border-color 0.15s"
@@ -3097,7 +3103,7 @@ export default function Home({
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: isMobile ? 4 : 20
+            marginTop: isMobile ? 0 : 20
           }}
         >
           {/* Left column: uploaded image previews (desktop only; on mobile a
@@ -3167,7 +3173,9 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              marginTop: 48 // keep the upload box near the textarea's height
+              // Desktop keeps the box near the textarea's height; on a phone it
+              // should sit just under the streak like the text page does.
+              marginTop: isMobile ? 0 : 48
             }}
           >
             {/* Hidden image picker (can select several at once) */}
@@ -3315,7 +3323,7 @@ export default function Home({
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: isMobile ? 4 : 20
+            marginTop: isMobile ? 0 : 20
           }}
         >
           {/* Left column: uploaded audio/video players (desktop only; on mobile a
@@ -3429,7 +3437,10 @@ export default function Home({
             {isMobile && (
             <div
               style={{
-                height: 100,
+                // Reserved whether or not a file is attached, so attaching one
+                // doesn't shove the buttons down. Kept as small as the preview
+                // allows — every pixel here is dead space when it's empty.
+                height: 72,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center"
@@ -3450,8 +3461,8 @@ export default function Home({
                   playsInline
                   preload="metadata"
                   style={{
-                    width: 132,
-                    height: 84,
+                    width: 100,
+                    height: 64, // fits the 72px reserved slot above
                     objectFit: "cover",
                     border: "2px solid #888",
                     borderRadius: 3,
@@ -3857,7 +3868,11 @@ export default function Home({
                 aria-label="Get a hint"
                 style={{
                   position: "absolute",
-                  left: -24,
+                  // Desktop has 40px of page padding to hang in. Mobile only has
+                  // 16, so -24 pushed the 18px bulb to x=-8 — half off-screen.
+                  // -11 centres it in the gap between the screen edge and the
+                  // question number (which starts at 16 padding + 12 card).
+                  left: isMobile ? -11 : -24,
                   top: 16,
                   padding: 0,
                   background: "transparent",
