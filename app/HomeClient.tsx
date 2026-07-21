@@ -1682,8 +1682,10 @@ export default function Home({
         style={{
           display: "flex",
           justifyContent: "center",
-          // Tighter on a phone: vertical space is the scarce resource there.
-          marginBottom: isMobile ? 8 : 20
+          // Tighter on a phone than desktop, but still clearly separated from
+          // the title above and the upload box below.
+          marginTop: isMobile ? 10 : 0,
+          marginBottom: isMobile ? 18 : 20
         }}
       >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
@@ -1808,7 +1810,7 @@ export default function Home({
   };
 
   return (
-    <main style={{ padding: isMobile ? "16px 16px 40px" : 40 }}>
+    <main style={{ padding: isMobile ? "40px 16px" : 40 }}>
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -2671,18 +2673,29 @@ export default function Home({
           fontFamily: "var(--font-playfair), Georgia, serif",
           fontStyle: "italic",
           fontWeight: "bold",
-          fontSize: 64,
+          // "Athenia Pro" is too wide for a phone at 64. Shrink it and break the
+          // line ourselves rather than letting it overflow or wrap unpredictably.
+          fontSize: isMobile ? 46 : 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: isMobile ? 2 : 12,
-          // "Athenia Pro" wraps to two lines on a phone, and the default
-          // line-height leaves a chasm between them. Tighten it so "Pro" tucks
-          // under "Athenia" and everything below moves up with it.
-          lineHeight: isMobile ? 0.9 : undefined,
+          marginBottom: isMobile ? 6 : 12,
+          lineHeight: isMobile ? 1.02 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
           color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
         }}
       >
-        {isPro ? "Athenia Pro" : "Athenia"}
+        {isPro ? (
+          isMobile ? (
+            <>
+              Athenia
+              <br />
+              Pro
+            </>
+          ) : (
+            "Athenia Pro"
+          )
+        ) : (
+          "Athenia"
+        )}
       </h1>
 
       {renderStreak()}
@@ -2858,7 +2871,23 @@ export default function Home({
               >
                 Support
               </Link>
-              {/* Upgrade sits in its own section between Support and Updates. */}
+              <Link
+                href="/updates"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Updates
+              </Link>
+              {/* Upgrade sits last, in its own section. */}
               <button
                 role="menuitem"
                 onClick={() => {
@@ -2878,22 +2907,6 @@ export default function Home({
               >
                 Upgrade
               </button>
-              <Link
-                href="/updates"
-                onClick={() => setMobileMenuOpen(false)}
-                style={{
-                  padding: "12px 16px",
-                  textAlign: "left",
-                  borderTop: "1px solid #888",
-                  background: "transparent",
-                  color: "inherit",
-                  fontSize: 16,
-                  textDecoration: "none",
-                  cursor: "pointer"
-                }}
-              >
-                Updates
-              </Link>
             </div>
           )}
         </div>
@@ -2929,7 +2942,7 @@ export default function Home({
           // Lines the toolbar up with the top of the image / audio upload boxes
           // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
           // On a phone that gap is dead space — pull the box up under the streak.
-          marginTop: isMobile ? 14 : 66,
+          marginTop: isMobile ? 10 : 66,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
           transition: "border-color 0.15s"
