@@ -187,6 +187,16 @@ const SUBMIT_GREEN = "#3f9169";
 // Submit / grade box.
 const RECHALLENGE_YELLOW = "#d9b45a";
 const RECHALLENGE_BTN = "#c79a34";
+// Desktop only: total vertical space between the title and the page's content,
+// which the streak sits centered inside. These preserve where the content
+// already sat — text was 12 (title) + 20 (streak) + 66 (box), the other two
+// 12 + 20 + 48 — now split evenly above and below the streak instead.
+const DESKTOP_TITLE_GAP: Record<Mode, number> = {
+  text: 98,
+  image: 80,
+  audio: 80
+};
+
 // Hint theme: the same yellow used for the answer-selection dot, so the
 // lightbulb and hint text read as one "yellow" accent.
 const HINT_YELLOW = "#eab308";
@@ -1682,12 +1692,21 @@ export default function Home({
         style={{
           display: "flex",
           justifyContent: "center",
-          // Equal above and below on mobile, so the streak sits centered
-          // between "Pro" and whatever the page puts under it. 32 not 22: the
-          // title's translateY(10px) shifts it down visually without changing
-          // layout, so it eats 10px of this gap.
-          marginTop: isMobile ? 32 : 0,
-          marginBottom: isMobile ? 22 : 20
+          // The streak is centered between the title and the page's content.
+          //
+          // The gap used to be split across three places — the title's
+          // marginBottom, the streak's marginBottom, and each page's own
+          // marginTop — which is why it sat hard against the title instead of
+          // in the middle. It's now owned here and split evenly, with the
+          // per-page marginTop removed so the content lands where it always did.
+          //
+          // Mobile uses 32/22 rather than 27/27 because the title's
+          // translateY(10px) shifts it down visually without changing layout,
+          // eating 10px of the gap above.
+          // +5/-5 keeps the total gap identical while shifting the streak down
+          // by the 10px the transform steals, so above and below match visually.
+          marginTop: isMobile ? 32 : DESKTOP_TITLE_GAP[mode] / 2 + 5,
+          marginBottom: isMobile ? 22 : DESKTOP_TITLE_GAP[mode] / 2 - 5
         }}
       >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
@@ -1811,11 +1830,12 @@ export default function Home({
     ];
   };
 
-  // On mobile the cog sits at y20-60 and the menu button at y70-110, both
-  // fixed. The title has to start below them or it renders underneath the
-  // buttons — which is what made a larger title collide.
+  // On mobile the title sits in the band beside the menu and profile buttons
+  // (both y70-110). At 70px "Athenia" is 247px wide, so centred it spans
+  // 64-311 while those buttons end at 55 and start at 320 — it slots between
+  // them rather than below them, which is what the old 104px padding forced.
   return (
-    <main style={{ padding: isMobile ? "104px 16px 40px" : 40 }}>
+    <main style={{ padding: isMobile ? "56px 16px 40px" : 40 }}>
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -2683,7 +2703,7 @@ export default function Home({
           // on where the wrap happens to land.
           fontSize: isMobile ? 70 : 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: 0,   // the streak owns the gap below
+          marginBottom: 0,   // the streak's margin owns the gap below
           lineHeight: isMobile ? 1.0 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
           color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
@@ -2947,8 +2967,8 @@ export default function Home({
           width: "100%",
           // Lines the toolbar up with the top of the image / audio upload boxes
           // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
-          // On a phone the streak's own margin provides the gap.
-          marginTop: isMobile ? 0 : 66,
+          // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+          marginTop: 0,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
           transition: "border-color 0.15s"
@@ -3173,9 +3193,8 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              // Desktop keeps the box near the textarea's height; on a phone it
-              // should sit just under the streak like the text page does.
-              marginTop: isMobile ? 0 : 48
+              // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+              marginTop: 0
             }}
           >
             {/* Hidden image picker (can select several at once) */}
@@ -3412,9 +3431,8 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              // Desktop lines this up with the textarea's height; on a phone it
-              // sits just under the streak like the text page.
-              marginTop: isMobile ? 0 : 48
+              // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+              marginTop: 0
             }}
           >
             {/* Hidden audio/video picker (can select several at once) */}
