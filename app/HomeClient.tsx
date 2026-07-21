@@ -1525,6 +1525,7 @@ export default function Home({
         style={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "center", // Submit / score / Rechallenge sit centered
           gap: 12,
           flexWrap: "wrap",
           marginTop: 8,
@@ -1611,9 +1612,11 @@ export default function Home({
           justifyContent: "center",
           padding: 0,
           borderRadius: 3,
-          border: "2px solid #888",
-          background: "transparent",
-          color: "#cbd5e1",
+          // Match Generate: borderless on the same fill, so it reads as part of
+          // the pair instead of an outlined box stuck to its side.
+          border: "none",
+          background: ACCENT_BG,
+          color: ACCENT_TEXT,
           cursor: "pointer"
         }}
       >
@@ -1675,7 +1678,14 @@ export default function Home({
     const fill = frozen ? STREAK_FROZEN_BLUE : STREAK_ORANGE;
 
     return (
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          // Tighter on a phone: vertical space is the scarce resource there.
+          marginBottom: isMobile ? 8 : 20
+        }}
+      >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
         <div
           ref={streakInfoRef}
@@ -1798,7 +1808,7 @@ export default function Home({
   };
 
   return (
-    <main style={{ padding: 40 }}>
+    <main style={{ padding: isMobile ? "16px 16px 40px" : 40 }}>
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -2663,7 +2673,11 @@ export default function Home({
           fontWeight: "bold",
           fontSize: 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: 12,
+          marginBottom: isMobile ? 2 : 12,
+          // "Athenia Pro" wraps to two lines on a phone, and the default
+          // line-height leaves a chasm between them. Tighten it so "Pro" tucks
+          // under "Athenia" and everything below moves up with it.
+          lineHeight: isMobile ? 0.9 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
           color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
         }}
@@ -2780,11 +2794,75 @@ export default function Home({
                   {m}
                 </button>
               ))}
+              {/* Stats / Quiz History / Customize are one group: only the first
+                  carries the divider, so they read as a block the way the tabs
+                  above do. */}
+              {[
+                {
+                  label: "Stats",
+                  act: () => {
+                    setStatsData(loadStats());
+                    setShowStats(true);
+                  }
+                },
+                { label: "Quiz History", href: "/history" },
+                { label: "Customize", act: () => setShowCustomize(true) }
+              ].map((item, i) => {
+                const style = {
+                  padding: "12px 16px",
+                  textAlign: "left" as const,
+                  border: "none",
+                  borderTop: i === 0 ? "1px solid #888" : undefined,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                };
+                return item.href ? (
+                  <Link
+                    key={item.label}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    style={style}
+                  >
+                    {item.label}
+                  </Link>
+                ) : (
+                  <button
+                    key={item.label}
+                    role="menuitem"
+                    onClick={() => {
+                      item.act?.();
+                      setMobileMenuOpen(false);
+                    }}
+                    style={style}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+              <Link
+                href="/support"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Support
+              </Link>
+              {/* Upgrade sits in its own section between Support and Updates. */}
               <button
                 role="menuitem"
                 onClick={() => {
-                  setStatsData(loadStats());
-                  setShowStats(true);
+                  setShowPricing(true);
                   setMobileMenuOpen(false);
                 }}
                 style={{
@@ -2793,35 +2871,29 @@ export default function Home({
                   border: "none",
                   borderTop: "1px solid #888",
                   background: "transparent",
-                  color: "inherit",
+                  color: STREAK_FROZEN_BLUE,
                   fontSize: 16,
                   cursor: "pointer"
                 }}
               >
-                Stats
+                Upgrade
               </button>
-              {[
-                { label: "Support", href: "/support" },
-                { label: "Updates", href: "/updates" }
-              ].map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                  style={{
-                    padding: "12px 16px",
-                    textAlign: "left",
-                    borderTop: "1px solid #888",
-                    background: "transparent",
-                    color: "inherit",
-                    fontSize: 16,
-                    textDecoration: "none",
-                    cursor: "pointer"
-                  }}
-                >
-                  {link.label}
-                </Link>
-              ))}
+              <Link
+                href="/updates"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Updates
+              </Link>
             </div>
           )}
         </div>
@@ -2856,7 +2928,8 @@ export default function Home({
           width: "100%",
           // Lines the toolbar up with the top of the image / audio upload boxes
           // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
-          marginTop: 66,
+          // On a phone that gap is dead space — pull the box up under the streak.
+          marginTop: isMobile ? 14 : 66,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: 3,
           transition: "border-color 0.15s"
@@ -3011,7 +3084,7 @@ export default function Home({
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: 20
+            marginTop: isMobile ? 4 : 20
           }}
         >
           {/* Left column: uploaded image previews (desktop only; on mobile a
@@ -3229,7 +3302,7 @@ export default function Home({
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: 20
+            marginTop: isMobile ? 4 : 20
           }}
         >
           {/* Left column: uploaded audio/video players (desktop only; on mobile a
@@ -3335,13 +3408,25 @@ export default function Home({
 
             {/* On mobile a small video preview sits centered above the two
                 buttons; tap it to expand fullscreen. Audio-only files show a
-                compact name chip in the same spot instead. */}
-            {isMobile && audioFiles[0]?.isVideo && (
+                compact name chip in the same spot instead.
+
+                The slot is a FIXED height that's reserved whether or not a file
+                is attached, so adding one drops it into place instead of
+                shoving the buttons and Generate down the screen. */}
+            {isMobile && (
+            <div
+              style={{
+                height: 100,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center"
+              }}
+            >
+            {audioFiles[0]?.isVideo && (
               <div
                 onClick={() => setFullscreenVideo(audioFiles[0].previewUrl)}
                 style={{
                   position: "relative",
-                  marginBottom: 16,
                   cursor: "pointer",
                   lineHeight: 0
                 }}
@@ -3407,13 +3492,12 @@ export default function Home({
                 </button>
               </div>
             )}
-            {isMobile && audioFiles[0] && !audioFiles[0].isVideo && (
+            {audioFiles[0] && !audioFiles[0].isVideo && (
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  marginBottom: 16,
                   maxWidth: 240,
                   fontSize: 14,
                   color: "#c7c7c7"
@@ -3452,6 +3536,8 @@ export default function Home({
                   ×
                 </button>
               </div>
+            )}
+            </div>
             )}
 
             {/* Add buttons: microphone (upload a file) + YouTube (paste a link) */}
