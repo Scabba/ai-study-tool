@@ -692,7 +692,9 @@ export default function HistoryPage() {
           </button>
         )}
 
-        {/* Sort — outside the scrolling strip so it never scrolls away */}
+        {/* Sort — outside the scrolling strip so it never scrolls away.
+            Hidden while the folder panel is expanded. */}
+        {!foldersExpanded && (
         <div ref={sortRef} style={{ position: "relative", flexShrink: 0 }}>
           <button
             onClick={() => setSortOpen((v) => !v)}
@@ -748,6 +750,7 @@ export default function HistoryPage() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Wide, short toggle under the folder bar: expands the strip into a
@@ -810,7 +813,16 @@ export default function HistoryPage() {
           No quizzes yet. Complete a quiz and it will show up here.
         </p>
       ) : (
-        <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{
+            // The hint line above already provides breathing room while the
+            // folder panel is open — keep the cards tight beneath it.
+            marginTop: foldersExpanded ? 4 : 20,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12
+          }}
+        >
           {sorted.map((r) => {
             const inFolders = folders.filter((f) => f.quizIds.includes(r.id));
             const isExpanded = expanded.has(r.id);
