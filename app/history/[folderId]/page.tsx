@@ -9,6 +9,7 @@ import {
   renameFolder,
   deleteQuiz,
   deleteFolder,
+  removeQuizFromFolder,
   type QuizRecord,
   type Folder
 } from "@/lib/stats";
@@ -71,6 +72,59 @@ function TrashIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+function PencilIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+// "Remove from folder" — an open folder with a minus.
+function FolderMinusIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      <path d="M9 14h6" />
+    </svg>
+  );
+}
+
+const quizMenuItem: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  textAlign: "left",
+  padding: "10px 12px",
+  background: "transparent",
+  color: "inherit",
+  border: "none",
+  fontSize: 14,
+  cursor: "pointer"
+};
+
 export default function FolderPage() {
   const params = useParams();
   const router = useRouter();
@@ -84,8 +138,10 @@ export default function FolderPage() {
   const [quizName, setQuizName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
+  const [menuId, setMenuId] = useState<string | null>(null); // which quiz's ⋯ menu is open
   const [titleSize, setTitleSize] = useState(TITLE_MAX);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
 
   useEffect(() => {
@@ -143,6 +199,16 @@ export default function FolderPage() {
     return () => window.removeEventListener("resize", fit);
   }, [folder?.name, editingFolder]);
 
+  // Close the quiz ⋯ menu on an outside click.
+  useEffect(() => {
+    if (!menuId) return;
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuId(null);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuId]);
+
   async function sync() {
     const s = loadStats();
     setAllRecords(s.history);
@@ -171,6 +237,14 @@ export default function FolderPage() {
   async function removeQuiz(id: string) {
     deleteQuiz(id);
     setConfirmDeleteId(null);
+    await sync();
+  }
+
+  // Take the quiz out of this folder — the quiz itself is kept, it just leaves
+  // the folder (so it drops off this page).
+  async function removeFromFolder(id: string) {
+    if (folder) removeQuizFromFolder(id, folder.id);
+    setMenuId(null);
     await sync();
   }
 
@@ -384,11 +458,11 @@ export default function FolderPage() {
               key={r.id}
               style={{
                 position: "relative",
-                zIndex: confirmDeleteId === r.id ? 30 : undefined,
+                zIndex: menuId === r.id ? 30 : undefined,
                 display: "flex",
                 alignItems: "center",
                 gap: 14,
-                padding: "14px 16px",
+                padding: "14px 34px 14px 16px", // right room for the ⋯ button
                 border: "1px solid #888",
                 borderRadius: 3
               }}
@@ -438,57 +512,6 @@ export default function FolderPage() {
                     >
                       {r.name}
                     </button>
-                    <button
-                      onClick={() => {
-                        setQuizName(r.name);
-                        setEditingQuiz(r.id);
-                      }}
-                      title="Rename"
-                      aria-label="Rename quiz"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        background: "transparent",
-                        border: "none",
-                        padding: 0,
-                        color: "inherit",
-                        cursor: "pointer",
-                        flexShrink: 0
-                      }}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{ opacity: 0.5 }}
-                      >
-                        <path d="M12 20h9" />
-                        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                      </svg>
-                    </button>
-                    {/* Delete — red trash, just right of the rename pencil */}
-                    <button
-                      onClick={() => setConfirmDeleteId(r.id)}
-                      title="Delete quiz"
-                      aria-label="Delete quiz"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        background: "transparent",
-                        border: "none",
-                        padding: 0,
-                        color: RED,
-                        cursor: "pointer",
-                        flexShrink: 0
-                      }}
-                    >
-                      <TrashIcon size={14} />
-                    </button>
                   </span>
                 )}
                 <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>
@@ -498,6 +521,82 @@ export default function FolderPage() {
               </div>
               <div style={{ flexShrink: 0, fontWeight: "bold", fontSize: 22, color: scoreColor(r.score) }}>
                 {r.score}%
+              </div>
+
+              {/* ⋯ actions, flush in the card's top-right corner */}
+              <div
+                ref={menuId === r.id ? menuRef : undefined}
+                style={{ position: "absolute", top: 0, right: 0 }}
+              >
+                <button
+                  onClick={() => setMenuId(menuId === r.id ? null : r.id)}
+                  aria-label="Quiz actions"
+                  title="Quiz actions"
+                  style={{
+                    width: 26,
+                    height: 26,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "0 3px 0 3px",
+                    borderLeft: "1px solid #888",
+                    borderBottom: "1px solid #888",
+                    borderTop: "none",
+                    borderRight: "none",
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    cursor: "pointer"
+                  }}
+                >
+                  ⋯
+                </button>
+
+                {menuId === r.id && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: -1,
+                      right: 0,
+                      minWidth: 190,
+                      background: "var(--background)",
+                      border: "1px solid #888",
+                      borderRadius: "3px 0 3px 3px",
+                      boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+                      zIndex: 20
+                    }}
+                  >
+                    <button
+                      onClick={() => {
+                        setQuizName(r.name);
+                        setEditingQuiz(r.id);
+                        setMenuId(null);
+                      }}
+                      style={quizMenuItem}
+                    >
+                      <PencilIcon />
+                      Rename
+                    </button>
+                    <button
+                      onClick={() => removeFromFolder(r.id)}
+                      style={{ ...quizMenuItem, borderTop: "1px solid #333" }}
+                    >
+                      <FolderMinusIcon />
+                      Remove from folder
+                    </button>
+                    <button
+                      onClick={() => {
+                        setConfirmDeleteId(r.id);
+                        setMenuId(null);
+                      }}
+                      style={{ ...quizMenuItem, borderTop: "1px solid #333", color: RED }}
+                    >
+                      <TrashIcon />
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ))}
