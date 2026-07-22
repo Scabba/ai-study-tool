@@ -488,6 +488,21 @@ export function deleteFolder(id: string) {
   save(s);
 }
 
+// Persist a new folder order (from drag-to-reorder on the history page). Any
+// folder id not in the list is appended, so a stale list can't drop folders.
+export function reorderFolders(orderedIds: string[]) {
+  const s = loadStats();
+  const byId = new Map(s.folders.map((f) => [f.id, f]));
+  const next: Folder[] = [];
+  for (const id of orderedIds) {
+    const f = byId.get(id);
+    if (f) next.push(f);
+  }
+  for (const f of s.folders) if (!orderedIds.includes(f.id)) next.push(f);
+  s.folders = next;
+  save(s);
+}
+
 // Add a quiz to a folder (no-op if already there).
 export function addQuizToFolder(quizId: string, folderId: string) {
   const s = loadStats();
