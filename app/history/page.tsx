@@ -9,6 +9,7 @@ import {
   deleteQuiz,
   createFolder,
   renameFolder,
+  deleteFolder,
   reorderFolders,
   addQuizToFolder,
   removeQuizFromFolder,
@@ -22,6 +23,8 @@ const GREEN = "#57b98a";
 const RED = "#e0776b";
 // Light blue wash marking the folder a quiz is already in, in the folder dropdown.
 const FOLDER_SELECTED = "rgba(125, 211, 252, 0.18)";
+// Light blue tint on the card field the list is currently sorted by.
+const SORT_HL = "#7dd3fc";
 
 // How many folder chips a card shows before collapsing the rest behind a "…".
 const CHIP_LIMIT = 2;
@@ -175,11 +178,33 @@ export default function HistoryPage() {
   const [scroll, setScroll] = useState({ left: false, right: false });
   // The folder currently being dragged to reorder the strip (its id).
   const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
+  // A folder created via + that hasn't been confirmed with Enter yet. Escape or
+  // clicking away deletes it again — naming it is what actually creates it.
+  const [newFolderId, setNewFolderId] = useState<string | null>(null);
+  // Right-click / long-press menu on a folder: which folder and where.
+  const [ctxMenu, setCtxMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<Folder | null>(null);
 
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
+  // Reorder dwell: a dragged folder must hover a target briefly before the strip
+  // reshuffles, so dragging across several folders doesn't shuffle on the way.
+  const dwell = useRef<{ target: string | null; timer: ReturnType<typeof setTimeout> | null }>({
+    target: null,
+    timer: null
+  });
+  // Long-press bookkeeping for the touch version of the context menu.
+  const longPress = useRef<{ timer: ReturnType<typeof setTimeout> | null; fired: boolean }>({
+    timer: null,
+    fired: false
+  });
+  // Guards the naming field's commit/cancel: pressing Enter commits and then
+  // the unmounting input still fires blur — without this, that blur would
+  // cancel-delete the folder that was just confirmed.
+  const nameSettled = useRef(false);
 
   useEffect(() => {
     document.title = "Quiz History — Athenia";
@@ -212,17 +237,22 @@ export default function HistoryPage() {
     };
   }, []);
 
-  // Close the card menu / sort menu on an outside click.
+  // Close the card menu / sort menu / folder context menu on an outside click.
   useEffect(() => {
-    if (!menuId && !sortOpen) return;
-    function onDown(e: MouseEvent) {
+    if (!menuId && !sortOpen && !ctxMenu) return;
+    function onDown(e: MouseEvent | TouchEvent) {
       const t = e.target as Node;
       if (menuId && !menuRef.current?.contains(t)) closeMenu();
       if (sortOpen && !sortRef.current?.contains(t)) setSortOpen(false);
+      if (ctxMenu && !ctxRef.current?.contains(t)) setCtxMenu(null);
     }
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [menuId, sortOpen]);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [menuId, sortOpen, ctxMenu]);
 
   // Track whether the folder strip has anything hidden off either end, so the
   // scroll arrows only appear when they'd actually do something.
@@ -294,8 +324,9 @@ export default function HistoryPage() {
     await refreshAndSync();
   }
 
-  // Create a folder and drop straight into renaming it, so the preset name is
-  // just a placeholder the user types over.
+  // Create a folder and drop straight into renaming it. Until the name is
+  // confirmed with Enter it isn't really created — Escape or clicking away
+  // deletes it again (see cancelFolderName).
   async function startNewFolder(quizId?: string) {
     const id = createFolder(NEW_FOLDER_NAME);
     if (quizId) addQuizToFolder(quizId, id);
@@ -303,6 +334,8 @@ export default function HistoryPage() {
     await refreshAndSync();
     setFolderName(NEW_FOLDER_NAME);
     setEditingFolderId(id);
+    setNewFolderId(id);
+    nameSettled.current = false;
     // Let the new button render before scrolling it into view.
     requestAnimationFrame(() => {
       stripRef.current?.scrollTo({ left: stripRef.current.scrollWidth, behavior: "smooth" });
@@ -311,29 +344,71 @@ export default function HistoryPage() {
   }
 
   async function commitFolderName(id: string) {
+    if (nameSettled.current) return;
+    nameSettled.current = true;
     renameFolder(id, folderName.trim() || NEW_FOLDER_NAME);
     setEditingFolderId(null);
+    setNewFolderId(null);
     await refreshAndSync();
   }
 
-  // Live-reorder the strip as a dragged folder is hovered over another: move
-  // the dragged folder to the hovered one's slot. Only touches local state;
-  // persisted on drop.
+  // Leave the naming field without confirming. A brand-new folder is deleted
+  // (naming it is what creates it); an existing folder just keeps its old name.
+  async function cancelFolderName(id: string) {
+    if (nameSettled.current) return;
+    nameSettled.current = true;
+    setEditingFolderId(null);
+    if (newFolderId === id) {
+      deleteFolder(id);
+      setNewFolderId(null);
+      await refreshAndSync();
+    }
+  }
+
+  async function removeFolder(id: string) {
+    deleteFolder(id);
+    setConfirmDeleteFolder(null);
+    await refreshAndSync();
+  }
+
+  // Reorder the strip while dragging — but only after the dragged folder has
+  // hovered the same target for a beat. Without the dwell, every folder passed
+  // on the way reshuffled instantly, which made dragging across several
+  // folders to a far slot nearly impossible.
   function reorderOnHover(targetId: string) {
     if (!draggingFolder || draggingFolder === targetId) return;
-    setFolders((prev) => {
-      const from = prev.findIndex((f) => f.id === draggingFolder);
-      const to = prev.findIndex((f) => f.id === targetId);
-      if (from === -1 || to === -1 || from === to) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
+    if (dwell.current.target === targetId) return; // already pending
+    if (dwell.current.timer) clearTimeout(dwell.current.timer);
+    dwell.current.target = targetId;
+    dwell.current.timer = setTimeout(() => {
+      dwell.current.timer = null;
+      setFolders((prev) => {
+        const from = prev.findIndex((f) => f.id === draggingFolder);
+        const to = prev.findIndex((f) => f.id === targetId);
+        if (from === -1 || to === -1 || from === to) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        return next;
+      });
+    }, 250);
+  }
+
+  // Keep the strip scrolling while a drag sits near either edge, so a folder
+  // can be carried to targets that are currently scrolled out of view.
+  function autoScrollOnDrag(clientX: number) {
+    const el = stripRef.current;
+    if (!el || !draggingFolder) return;
+    const rect = el.getBoundingClientRect();
+    if (clientX < rect.left + 48) el.scrollLeft -= 14;
+    else if (clientX > rect.right - 48) el.scrollLeft += 14;
   }
 
   // Commit the current strip order once the drag ends.
   async function commitOrder() {
+    if (dwell.current.timer) clearTimeout(dwell.current.timer);
+    dwell.current.target = null;
+    dwell.current.timer = null;
     reorderFolders(folders.map((f) => f.id));
     setDraggingFolder(null);
     if (auth.current) {
@@ -343,6 +418,11 @@ export default function HistoryPage() {
         // best-effort
       }
     }
+  }
+
+  // Open the folder context menu (right-click on desktop, long-press on touch).
+  function openCtxMenu(folderId: string, x: number, y: number) {
+    setCtxMenu({ folderId, x, y });
   }
 
   function toggleExpanded(id: string) {
@@ -366,7 +446,9 @@ export default function HistoryPage() {
           (a.subject ?? "General").localeCompare(b.subject ?? "General")
         );
       case "grade":
-        return list.sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade));
+        // Highest to lowest, matching every other sort: Graduate first, then
+        // year/grade numbers descending.
+        return list.sort((a, b) => gradeRank(b.grade) - gradeRank(a.grade));
       default:
         return list.sort((a, b) => b.date - a.date);
     }
@@ -422,6 +504,13 @@ export default function HistoryPage() {
         <div
           ref={stripRef}
           onScroll={syncScroll}
+          // Dragging a folder near either edge scrolls the strip, so it can be
+          // carried to slots that are out of view.
+          onDragOver={(e) => {
+            if (!draggingFolder) return;
+            e.preventDefault();
+            autoScrollOnDrag(e.clientX);
+          }}
           style={{
             display: "flex",
             gap: 8,
@@ -438,11 +527,16 @@ export default function HistoryPage() {
                 autoFocus
                 value={folderName}
                 onChange={(e) => setFolderName(e.target.value)}
-                onBlur={() => commitFolderName(f.id)}
+                // A NEW folder only exists once its name is confirmed with
+                // Enter: clicking away or Escape un-creates it. Renaming an
+                // existing folder keeps the old behaviour (blur commits).
+                onBlur={() =>
+                  newFolderId === f.id ? cancelFolderName(f.id) : commitFolderName(f.id)
+                }
                 onFocus={(e) => e.target.select()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commitFolderName(f.id);
-                  if (e.key === "Escape") setEditingFolderId(null);
+                  if (e.key === "Escape") cancelFolderName(f.id);
                 }}
                 style={{
                   flexShrink: 0,
@@ -476,6 +570,34 @@ export default function HistoryPage() {
                   if (draggingFolder) e.preventDefault();
                 }}
                 onDragEnd={commitOrder}
+                // Right-click (desktop) or hold (touch) opens Rename / Delete.
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openCtxMenu(f.id, e.clientX, e.clientY);
+                }}
+                onTouchStart={(e) => {
+                  const t = e.touches[0];
+                  longPress.current.fired = false;
+                  longPress.current.timer = setTimeout(() => {
+                    longPress.current.fired = true;
+                    openCtxMenu(f.id, t.clientX, t.clientY);
+                  }, 500);
+                }}
+                onTouchMove={() => {
+                  if (longPress.current.timer) clearTimeout(longPress.current.timer);
+                  longPress.current.timer = null;
+                }}
+                onTouchEnd={() => {
+                  if (longPress.current.timer) clearTimeout(longPress.current.timer);
+                  longPress.current.timer = null;
+                }}
+                onClick={(e) => {
+                  // A long-press that opened the menu must not also navigate.
+                  if (longPress.current.fired) {
+                    e.preventDefault();
+                    longPress.current.fired = false;
+                  }
+                }}
                 title="Drag to reorder"
                 style={{
                   display: "inline-flex",
@@ -701,9 +823,22 @@ export default function HistoryPage() {
                     </span>
                   )}
 
+                  {/* The field the list is currently sorted by is tinted light
+                      blue, so it's obvious what the order means. */}
                   <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>
-                    {r.subject ?? "General"} · {gradeLabel(r.grade)} · {r.questions} question
-                    {r.questions === 1 ? "" : "s"} · {formatDate(r.date)}
+                    <span style={{ color: sortBy === "topic" ? SORT_HL : undefined }}>
+                      {r.subject ?? "General"}
+                    </span>
+                    {" · "}
+                    <span style={{ color: sortBy === "grade" ? SORT_HL : undefined }}>
+                      {gradeLabel(r.grade)}
+                    </span>
+                    {" · "}
+                    <span style={{ color: sortBy === "questions" ? SORT_HL : undefined }}>
+                      {r.questions} question{r.questions === 1 ? "" : "s"}
+                    </span>
+                    {" · "}
+                    {formatDate(r.date)}
                   </div>
 
                   {/* Expanded: every folder, wrapping onto its own rows, plus
@@ -971,6 +1106,128 @@ export default function HistoryPage() {
         </div>
       )}
 
+      {/* Folder context menu — right-click on desktop, long-press on touch */}
+      {ctxMenu && (
+        <div
+          ref={ctxRef}
+          style={{
+            position: "fixed",
+            left: Math.min(ctxMenu.x, window.innerWidth - 170),
+            top: Math.min(ctxMenu.y, window.innerHeight - 100),
+            minWidth: 160,
+            background: "var(--background)",
+            border: "1px solid #888",
+            borderRadius: 3,
+            boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+            zIndex: 2000,
+            overflow: "hidden"
+          }}
+        >
+          <button
+            onClick={() => {
+              const f = folders.find((x) => x.id === ctxMenu.folderId);
+              if (f) {
+                setFolderName(f.name);
+                setEditingFolderId(f.id);
+                nameSettled.current = false;
+              }
+              setCtxMenu(null);
+            }}
+            style={{ ...menuItem, display: "flex", alignItems: "center", gap: 8 }}
+          >
+            <PencilIcon />
+            Rename
+          </button>
+          <button
+            onClick={() => {
+              const f = folders.find((x) => x.id === ctxMenu.folderId) ?? null;
+              setCtxMenu(null);
+              setConfirmDeleteFolder(f);
+            }}
+            style={{
+              ...menuItem,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              borderTop: "1px solid #333",
+              color: RED
+            }}
+          >
+            <TrashIcon />
+            Delete
+          </button>
+        </div>
+      )}
+
+      {/* Folder-delete confirmation */}
+      {confirmDeleteFolder && (
+        <div
+          onClick={() => setConfirmDeleteFolder(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Are you sure you want to delete{" "}
+              <span style={{ fontWeight: "bold" }}>
+                &ldquo;{confirmDeleteFolder.name}&rdquo;
+              </span>
+              ?
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteFolder(null)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => removeFolder(confirmDeleteFolder.id)}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
