@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -47,14 +47,8 @@ function nameFontSize(name: string): number {
   return 13;
 }
 
-// Same idea for the big folder-name heading, scaled up.
-function titleFontSize(name: string): number {
-  const n = name.length;
-  if (n <= 18) return 40;
-  if (n <= 28) return 32;
-  if (n <= 40) return 26;
-  return 22;
-}
+const TITLE_MAX = 40; // the heading's ideal size when it fits
+const TITLE_MIN = 18; // don't shrink below this; ellipsis takes over instead
 
 function TrashIcon({ size = 14 }: { size?: number }) {
   return (
@@ -90,6 +84,8 @@ export default function FolderPage() {
   const [quizName, setQuizName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
+  const [titleSize, setTitleSize] = useState(TITLE_MAX);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
 
   useEffect(() => {
@@ -122,6 +118,30 @@ export default function FolderPage() {
       active = false;
     };
   }, [folderId]);
+
+  // Fit the folder title to the space between the back arrow and the trash.
+  // Character-count sizing can't do this: a short name still overflows on a
+  // narrow screen, which is why "Chemistry" was rendering as "Chemi…". So we
+  // measure and shrink until it fits (or hit the floor and let ellipsis take
+  // over). Re-runs on name change and on resize, since the fit is width-driven.
+  useLayoutEffect(() => {
+    function fit() {
+      const el = titleRef.current;
+      if (!el) return;
+      let size = TITLE_MAX;
+      el.style.fontSize = `${size}px`;
+      let guard = 0;
+      while (el.scrollWidth > el.clientWidth && size > TITLE_MIN && guard < 40) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+        guard += 1;
+      }
+      setTitleSize(size);
+    }
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [folder?.name, editingFolder]);
 
   async function sync() {
     const s = loadStats();
@@ -269,9 +289,10 @@ export default function FolderPage() {
             }}
           >
             <h1
+              ref={titleRef}
               style={{
                 fontWeight: "bold",
-                fontSize: titleFontSize(folder ? folder.name : "Folder not found"),
+                fontSize: titleSize,
                 margin: 0,
                 minWidth: 0,
                 overflow: "hidden",

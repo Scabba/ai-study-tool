@@ -7,11 +7,14 @@ import { useState, useEffect } from "react";
 const APP_VERSION = "0.7";
 
 const WHATS_NEW = [
-  "🎨 Customizable fonts and color palettes",
-  "💸 Monetization with Athenia Pro",
-  "🎙️ Record audio to turn into questions with Athenia Pro",
-  "🤖 AI Athenia Assistant",
-  "📰 Privacy Policy & Terms of Service",
+  "👾 2 minigames on a brand new 'Games' page",
+  "🛠️ Reworked Quiz History page",
+  "🎨 Customizable buttons, quiz layout, and quiz folder colors",
+  "📝 Optional written answers for generated questions",
+  "📱 Mobile UI improvements to improve usability and accessibility",
+  "👤 Moderation of prompts to ensure appropriate generated content",
+  "⬆️ Improved generated question quality",
+  "🔧 Various bugfixes, UI, and performance improvements"
 ];
 
 export default function WhatsNew() {
