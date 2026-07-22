@@ -557,12 +557,12 @@ export default function FolderPage() {
                   <div
                     style={{
                       position: "absolute",
-                      top: -1,
-                      right: 0,
+                      top: -1, // top edge flush with the card's top edge
+                      left: "100%", // grows out to the right of the card
                       minWidth: 190,
                       background: "var(--background)",
                       border: "1px solid #888",
-                      borderRadius: "3px 0 3px 3px",
+                      borderRadius: "0 3px 3px 3px",
                       boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
                       zIndex: 20
                     }}
