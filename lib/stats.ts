@@ -480,6 +480,14 @@ export function renameFolder(id: string, name: string) {
   save(s);
 }
 
+// Delete a folder. The quizzes it held are untouched — a folder is just a tag,
+// so removing it un-files those quizzes rather than deleting them.
+export function deleteFolder(id: string) {
+  const s = loadStats();
+  s.folders = s.folders.filter((f) => f.id !== id);
+  save(s);
+}
+
 // Add a quiz to a folder (no-op if already there).
 export function addQuizToFolder(quizId: string, folderId: string) {
   const s = loadStats();

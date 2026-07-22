@@ -37,6 +37,36 @@ function gradeLabel(grade: string): string {
   return /^\d+$/.test(grade) ? `Grade ${grade}` : grade;
 }
 
+// Shrink a long quiz name so it fits the card rather than just truncating.
+function nameFontSize(name: string): number {
+  const n = name.length;
+  if (n <= 26) return 17;
+  if (n <= 36) return 15;
+  if (n <= 48) return 14;
+  return 13;
+}
+
+function TrashIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 export default function FolderPage() {
   const params = useParams();
   const router = useRouter();
@@ -285,93 +315,11 @@ export default function FolderPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 14,
-                padding: "14px 34px", // room for the corner x
+                padding: "14px 16px",
                 border: "1px solid #888",
                 borderRadius: 3
               }}
             >
-              {/* Red x flush in the very top-left corner — deletes the quiz */}
-              <div style={{ position: "absolute", top: 0, left: 0 }}>
-                <button
-                  onClick={() =>
-                    confirmDeleteId === r.id ? setConfirmDeleteId(null) : setConfirmDeleteId(r.id)
-                  }
-                  aria-label="Delete quiz"
-                  title="Delete quiz"
-                  style={{
-                    width: 26,
-                    height: 26,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: "3px 0 3px 0",
-                    borderRight: "1px solid #888",
-                    borderBottom: "1px solid #888",
-                    borderTop: "none",
-                    borderLeft: "none",
-                    background: "transparent",
-                    color: RED,
-                    fontSize: 18,
-                    lineHeight: 1,
-                    cursor: "pointer"
-                  }}
-                >
-                  ×
-                </button>
-
-                {confirmDeleteId === r.id && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: -1,
-                      left: "100%",
-                      minWidth: 180,
-                      background: "var(--background)",
-                      border: "1px solid #888",
-                      borderRadius: "0 3px 3px 3px",
-                      boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
-                      zIndex: 20,
-                      padding: 12
-                    }}
-                  >
-                    <div style={{ fontSize: 14, marginBottom: 10 }}>
-                      Delete this quiz? This can&apos;t be undone.
-                    </div>
-                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        style={{
-                          border: "1px solid #888",
-                          borderRadius: 3,
-                          background: "transparent",
-                          color: "inherit",
-                          fontSize: 13,
-                          padding: "4px 10px",
-                          cursor: "pointer"
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => removeQuiz(r.id)}
-                        style={{
-                          border: `1px solid ${RED}`,
-                          borderRadius: 3,
-                          background: "transparent",
-                          color: RED,
-                          fontSize: 13,
-                          fontWeight: "bold",
-                          padding: "4px 10px",
-                          cursor: "pointer"
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               <div style={{ minWidth: 0, flex: 1 }}>
                 {editingQuiz === r.id ? (
                   <input
@@ -406,7 +354,7 @@ export default function FolderPage() {
                         border: "none",
                         padding: 0,
                         color: "inherit",
-                        fontSize: 17,
+                        fontSize: nameFontSize(r.name),
                         fontWeight: "bold",
                         cursor: "pointer",
                         textAlign: "left",
@@ -450,6 +398,24 @@ export default function FolderPage() {
                         <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
                       </svg>
                     </button>
+                    {/* Delete — red trash, just right of the rename pencil */}
+                    <button
+                      onClick={() => setConfirmDeleteId(r.id)}
+                      title="Delete quiz"
+                      aria-label="Delete quiz"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        background: "transparent",
+                        border: "none",
+                        padding: 0,
+                        color: RED,
+                        cursor: "pointer",
+                        flexShrink: 0
+                      }}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
                   </span>
                 )}
                 <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>
@@ -468,8 +434,66 @@ export default function FolderPage() {
       {confirmDeleteId && (
         <div
           onClick={() => setConfirmDeleteId(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 10 }}
-        />
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Delete this quiz? This can&apos;t be undone.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => removeQuiz(confirmDeleteId)}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

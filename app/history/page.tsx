@@ -9,6 +9,7 @@ import {
   deleteQuiz,
   createFolder,
   renameFolder,
+  deleteFolder,
   addQuizToFolder,
   removeQuizFromFolder,
   type QuizRecord,
@@ -47,6 +48,16 @@ function formatDate(ms: number): string {
 function gradeLabel(grade: string): string {
   if (!grade) return "—";
   return /^\d+$/.test(grade) ? `Grade ${grade}` : grade;
+}
+
+// Shrink a long quiz name so it fits the card instead of just truncating. The
+// card still ellipsises past the smallest size, so this is best-effort.
+function nameFontSize(name: string): number {
+  const n = name.length;
+  if (n <= 26) return 17;
+  if (n <= 36) return 15;
+  if (n <= 48) return 14;
+  return 13;
 }
 
 // Sort a numeric grade ("9") ahead of a named one ("Graduate"), so ordering by
@@ -162,6 +173,11 @@ export default function HistoryPage() {
   const [sortOpen, setSortOpen] = useState(false);
   // Whether the folder strip overflows, and which way it can scroll.
   const [scroll, setScroll] = useState({ left: false, right: false });
+  // A folder is being dragged (id), whether it's over the trash, and the folder
+  // dropped onto it that's awaiting delete confirmation.
+  const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
+  const [overTrash, setOverTrash] = useState(false);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<Folder | null>(null);
 
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
@@ -303,6 +319,12 @@ export default function HistoryPage() {
     await refreshAndSync();
   }
 
+  async function removeFolder(id: string) {
+    deleteFolder(id);
+    setConfirmDeleteFolder(null);
+    await refreshAndSync();
+  }
+
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -366,6 +388,55 @@ export default function HistoryPage() {
         <h1 style={{ textAlign: "center", fontWeight: "bold", fontSize: 40, margin: 0 }}>
           Quiz History
         </h1>
+
+        {/* Drag a folder here to delete it. Idle it's a small trash icon in the
+            corner; while a folder is dragged over it, it swells into a red
+            "Delete" target. Deleting a folder only un-files its quizzes. */}
+        <div
+          onDragOver={(e) => {
+            if (!draggingFolder) return;
+            e.preventDefault(); // allow the drop
+            e.dataTransfer.dropEffect = "move";
+            if (!overTrash) setOverTrash(true);
+          }}
+          onDragLeave={() => setOverTrash(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            const id = e.dataTransfer.getData("text/plain") || draggingFolder;
+            const f = folders.find((x) => x.id === id) ?? null;
+            setOverTrash(false);
+            setDraggingFolder(null);
+            if (f) setConfirmDeleteFolder(f);
+          }}
+          aria-label="Delete folder — drag a folder here"
+          title="Drag a folder here to delete it"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: overTrash ? 4 : 0,
+            width: overTrash ? 120 : 40,
+            height: overTrash ? 120 : 40,
+            borderRadius: "50%",
+            border: `2px solid ${overTrash ? RED : "transparent"}`,
+            background: overTrash ? RED : "transparent",
+            color: overTrash ? "#fff" : RED,
+            // Only a folder drag should light it up; ignore pointer events
+            // otherwise so it never blocks clicks on what's behind it.
+            pointerEvents: draggingFolder ? "auto" : "none",
+            opacity: draggingFolder || overTrash ? 1 : 0.55,
+            transition: "width 0.15s, height 0.15s, background 0.15s, gap 0.15s",
+            zIndex: 40
+          }}
+        >
+          <TrashIcon size={overTrash ? 40 : 20} />
+          {overTrash && <span style={{ fontSize: 15, fontWeight: "bold" }}>Delete</span>}
+        </div>
       </div>
 
       {/* Folder bar: the folders scroll, the + and the sort menu don't. The sort
@@ -419,6 +490,16 @@ export default function HistoryPage() {
               <Link
                 key={f.id}
                 href={`/history/${f.id}`}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", f.id); // Firefox needs data set
+                  setDraggingFolder(f.id);
+                }}
+                onDragEnd={() => {
+                  setDraggingFolder(null);
+                  setOverTrash(false);
+                }}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -432,7 +513,8 @@ export default function HistoryPage() {
                   color: "inherit",
                   fontSize: 15,
                   textDecoration: "none",
-                  whiteSpace: "nowrap"
+                  whiteSpace: "nowrap",
+                  opacity: draggingFolder === f.id ? 0.4 : 1
                 }}
               >
                 <FolderIcon />
@@ -599,7 +681,7 @@ export default function HistoryPage() {
                           border: "none",
                           padding: 0,
                           color: "inherit",
-                          fontSize: 17,
+                          fontSize: nameFontSize(r.name),
                           fontWeight: "bold",
                           cursor: "pointer",
                           textAlign: "left",
@@ -908,6 +990,76 @@ export default function HistoryPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Folder-delete confirmation, raised after a folder is dropped on the trash */}
+      {confirmDeleteFolder && (
+        <div
+          onClick={() => setConfirmDeleteFolder(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Are you sure you want to delete{" "}
+              <span style={{ fontWeight: "bold" }}>
+                &ldquo;{confirmDeleteFolder.name}&rdquo;
+              </span>
+              ?
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteFolder(null)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => removeFolder(confirmDeleteFolder.id)}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </main>
