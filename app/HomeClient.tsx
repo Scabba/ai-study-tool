@@ -1542,7 +1542,8 @@ export default function Home({
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "center", // Submit / score / Rechallenge sit centered
+          // Centered on mobile only; left-aligned on desktop as before.
+          justifyContent: isMobile ? "center" : "flex-start",
           gap: 12,
           flexWrap: "wrap",
           marginTop: 8,

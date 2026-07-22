@@ -91,7 +91,8 @@ export default function WhatsNew() {
         <button
           onClick={close}
           style={{
-            marginTop: 12,
+            display: "block",
+            margin: "12px auto 0", // center under the list
             padding: "10px 24px",
             background: "#2563eb",
             color: "white",
