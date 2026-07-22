@@ -281,6 +281,32 @@ export default function HistoryPage() {
     stripRef.current?.scrollBy({ left: dir * 180, behavior: "smooth" });
   }
 
+  // A folder chip half-clipped at the strip's edge looks broken, so chips are
+  // only shown once they fit entirely inside the visible strip. visibility
+  // (not display) keeps their space, so the scroll position and reordering
+  // geometry stay stable. Plain rect math on scroll/render rather than an
+  // IntersectionObserver — few elements, and it's synchronously testable.
+  function syncChipVisibility() {
+    const el = stripRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    for (const k of [...el.children] as HTMLElement[]) {
+      if (foldersExpanded) {
+        k.style.visibility = ""; // the wrapped panel never clips
+        continue;
+      }
+      const b = k.getBoundingClientRect();
+      const fits = b.left >= rect.left - 1 && b.right <= rect.right + 1;
+      k.style.visibility = fits ? "" : "hidden";
+    }
+  }
+
+  // Re-evaluate after every commit: folders changing, the panel toggling, and
+  // renames all move chip geometry, and the loop is cheap.
+  useEffect(() => {
+    syncChipVisibility();
+  });
+
   async function refreshAndSync() {
     const s = loadStats();
     setRecords(s.history);
@@ -516,7 +542,10 @@ export default function HistoryPage() {
 
         <div
           ref={stripRef}
-          onScroll={syncScroll}
+          onScroll={() => {
+            syncScroll();
+            syncChipVisibility();
+          }}
           // Dragging a folder near either edge scrolls the strip, so it can be
           // carried to slots that are out of view. (Moot while expanded — the
           // panel wraps instead of scrolling.)
@@ -815,9 +844,9 @@ export default function HistoryPage() {
       ) : (
         <div
           style={{
-            // The hint line above already provides breathing room while the
-            // folder panel is open — keep the cards tight beneath it.
-            marginTop: foldersExpanded ? 4 : 20,
+            // Tight under the expand toggle / drag hint; the original 20 only
+            // applies when there are no folders (and so no toggle) above.
+            marginTop: foldersExpanded ? 4 : folders.length > 0 ? 6 : 20,
             display: "flex",
             flexDirection: "column",
             gap: 12
