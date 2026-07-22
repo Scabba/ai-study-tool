@@ -174,8 +174,6 @@ export default function HistoryPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<SortKey>("recent");
   const [sortOpen, setSortOpen] = useState(false);
-  // Whether the folder strip overflows, and which way it can scroll.
-  const [scroll, setScroll] = useState({ left: false, right: false });
   // The folder currently being dragged to reorder the strip (its id).
   const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
   // A folder created via + that hasn't been confirmed with Enter yet. Escape or
@@ -184,14 +182,11 @@ export default function HistoryPage() {
   // Right-click / long-press menu on a folder: which folder and where.
   const [ctxMenu, setCtxMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<Folder | null>(null);
-  // Expanded folder panel: the strip wraps to show every folder, and quiz cards
-  // become draggable so they can be dropped onto a folder to file them.
-  const [foldersExpanded, setFoldersExpanded] = useState(false);
+  // Quiz cards can be dragged onto a folder to file them.
   const [draggingQuiz, setDraggingQuiz] = useState<string | null>(null);
   const [quizDropTarget, setQuizDropTarget] = useState<string | null>(null);
 
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
-  const stripRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
@@ -259,54 +254,6 @@ export default function HistoryPage() {
     };
   }, [menuId, sortOpen, ctxMenu]);
 
-  // Track whether the folder strip has anything hidden off either end, so the
-  // scroll arrows only appear when they'd actually do something.
-  function syncScroll() {
-    const el = stripRef.current;
-    if (!el) return;
-    const max = el.scrollWidth - el.clientWidth;
-    setScroll({ left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 });
-  }
-
-  useEffect(() => {
-    syncScroll();
-    const el = stripRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(syncScroll);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [folders.length]);
-
-  function scrollStrip(dir: 1 | -1) {
-    stripRef.current?.scrollBy({ left: dir * 180, behavior: "smooth" });
-  }
-
-  // A folder chip half-clipped at the strip's edge looks broken, so chips are
-  // only shown once they fit entirely inside the visible strip. visibility
-  // (not display) keeps their space, so the scroll position and reordering
-  // geometry stay stable. Plain rect math on scroll/render rather than an
-  // IntersectionObserver — few elements, and it's synchronously testable.
-  function syncChipVisibility() {
-    const el = stripRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    for (const k of [...el.children] as HTMLElement[]) {
-      if (foldersExpanded) {
-        k.style.visibility = ""; // the wrapped panel never clips
-        continue;
-      }
-      const b = k.getBoundingClientRect();
-      const fits = b.left >= rect.left - 1 && b.right <= rect.right + 1;
-      k.style.visibility = fits ? "" : "hidden";
-    }
-  }
-
-  // Re-evaluate after every commit: folders changing, the panel toggling, and
-  // renames all move chip geometry, and the loop is cheap.
-  useEffect(() => {
-    syncChipVisibility();
-  });
-
   async function refreshAndSync() {
     const s = loadStats();
     setRecords(s.history);
@@ -367,11 +314,6 @@ export default function HistoryPage() {
     setEditingFolderId(id);
     setNewFolderId(id);
     nameSettled.current = false;
-    // Let the new button render before scrolling it into view.
-    requestAnimationFrame(() => {
-      stripRef.current?.scrollTo({ left: stripRef.current.scrollWidth, behavior: "smooth" });
-      syncScroll();
-    });
   }
 
   async function commitFolderName(id: string) {
@@ -423,16 +365,6 @@ export default function HistoryPage() {
         return next;
       });
     }, 250);
-  }
-
-  // Keep the strip scrolling while a drag sits near either edge, so a folder
-  // can be carried to targets that are currently scrolled out of view.
-  function autoScrollOnDrag(clientX: number) {
-    const el = stripRef.current;
-    if (!el || !draggingFolder) return;
-    const rect = el.getBoundingClientRect();
-    if (clientX < rect.left + 48) el.scrollLeft -= 14;
-    else if (clientX > rect.right - 48) el.scrollLeft += 14;
   }
 
   // Commit the current strip order once the drag ends.
@@ -493,19 +425,6 @@ export default function HistoryPage() {
     }
   }, [records, sortBy]);
 
-  const scrollBtn: React.CSSProperties = {
-    flexShrink: 0,
-    width: 30,
-    height: 38,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 3,
-    border: "2px solid #888",
-    background: "var(--background)",
-    color: "inherit",
-    cursor: "pointer"
-  };
 
   return (
     <main style={{ padding: 40, maxWidth: 640, margin: "0 auto" }}>
@@ -529,41 +448,84 @@ export default function HistoryPage() {
         <h1 style={{ textAlign: "center", fontWeight: "bold", fontSize: 40, margin: 0 }}>
           Quiz History
         </h1>
+
+        {/* Sort — mirrors the back arrow on the other side of the title */}
+        <div
+          ref={sortRef}
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "50%",
+            transform: "translateY(-50%)"
+          }}
+        >
+          <button
+            onClick={() => setSortOpen((v) => !v)}
+            title="Sort quizzes"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              height: 32,
+              padding: "0 10px",
+              borderRadius: 3,
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              fontSize: 13,
+              cursor: "pointer",
+              whiteSpace: "nowrap"
+            }}
+          >
+            {SORTS.find((s) => s.key === sortBy)?.label}
+            <span style={{ opacity: 0.6, fontSize: 10 }}>▼</span>
+          </button>
+          {sortOpen && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                right: 0,
+                minWidth: 160,
+                background: "var(--background)",
+                border: "1px solid #888",
+                borderRadius: 3,
+                boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+                zIndex: 40,
+                overflow: "hidden"
+              }}
+            >
+              {SORTS.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => {
+                    setSortBy(s.key);
+                    setSortOpen(false);
+                  }}
+                  style={{
+                    ...menuItem,
+                    background: sortBy === s.key ? FOLDER_SELECTED : "transparent"
+                  }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Folder bar: the folders scroll, the + and the sort menu don't. The sort
-          control sits outside the scrolling strip so it stays reachable. */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24 }}>
-        {!foldersExpanded && scroll.left && (
-          <button onClick={() => scrollStrip(-1)} aria-label="Scroll folders left" style={scrollBtn}>
-            <Chevron dir="left" />
-          </button>
-        )}
-
+      {/* Folder bar: every folder, wrapping onto as many rows as needed.
+          Drag a folder to reorder; drag a quiz card onto one to file it. */}
         <div
-          ref={stripRef}
-          onScroll={() => {
-            syncScroll();
-            syncChipVisibility();
-          }}
-          // Dragging a folder near either edge scrolls the strip, so it can be
-          // carried to slots that are out of view. (Moot while expanded — the
-          // panel wraps instead of scrolling.)
           onDragOver={(e) => {
-            if (!draggingFolder) return;
-            e.preventDefault();
-            if (!foldersExpanded) autoScrollOnDrag(e.clientX);
+            if (draggingFolder) e.preventDefault();
           }}
           style={{
             display: "flex",
+            flexWrap: "wrap",
             gap: 8,
-            // Expanded: wrap to show every folder at once. Collapsed: one
-            // scrolling row.
-            flexWrap: foldersExpanded ? "wrap" : "nowrap",
-            overflowX: foldersExpanded ? "visible" : "auto",
-            scrollbarWidth: "none",
-            flex: 1,
-            minWidth: 0
+            marginTop: 24
           }}
         >
           {folders.map((f) =>
@@ -715,128 +677,6 @@ export default function HistoryPage() {
           </button>
         </div>
 
-        {!foldersExpanded && scroll.right && (
-          <button onClick={() => scrollStrip(1)} aria-label="Scroll folders right" style={scrollBtn}>
-            <Chevron dir="right" />
-          </button>
-        )}
-
-        {/* Sort — outside the scrolling strip so it never scrolls away.
-            Hidden while the folder panel is expanded. */}
-        {!foldersExpanded && (
-        <div ref={sortRef} style={{ position: "relative", flexShrink: 0 }}>
-          <button
-            onClick={() => setSortOpen((v) => !v)}
-            title="Sort quizzes"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              height: 38,
-              padding: "0 12px",
-              borderRadius: 3,
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
-              fontSize: 14,
-              cursor: "pointer",
-              whiteSpace: "nowrap"
-            }}
-          >
-            {SORTS.find((s) => s.key === sortBy)?.label}
-            <span style={{ opacity: 0.6, fontSize: 10 }}>▼</span>
-          </button>
-          {sortOpen && (
-            <div
-              style={{
-                position: "absolute",
-                top: "calc(100% + 4px)",
-                right: 0,
-                minWidth: 160,
-                background: "var(--background)",
-                border: "1px solid #888",
-                borderRadius: 3,
-                boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
-                zIndex: 40,
-                overflow: "hidden"
-              }}
-            >
-              {SORTS.map((s) => (
-                <button
-                  key={s.key}
-                  onClick={() => {
-                    setSortBy(s.key);
-                    setSortOpen(false);
-                  }}
-                  style={{
-                    ...menuItem,
-                    background: sortBy === s.key ? FOLDER_SELECTED : "transparent"
-                  }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        )}
-      </div>
-
-      {/* Wide, short toggle under the folder bar: expands the strip into a
-          wrapped panel showing every folder, where quiz cards can be dragged
-          onto a folder to file them. */}
-      {folders.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 6 }}>
-          <button
-            onClick={() => setFoldersExpanded((v) => !v)}
-            aria-expanded={foldersExpanded}
-            aria-label={foldersExpanded ? "Collapse folders" : "Expand folders"}
-            title={
-              foldersExpanded
-                ? "Collapse folders"
-                : "Show all folders — drag quizzes onto them to file"
-            }
-            style={{
-              width: 180,
-              height: 16,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 0,
-              border: "1px solid #888",
-              borderRadius: 3,
-              background: "transparent",
-              color: "#cbd5e1",
-              cursor: "pointer"
-            }}
-          >
-            <svg
-              width="14"
-              height="10"
-              viewBox="0 0 24 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{
-                transform: foldersExpanded ? "rotate(180deg)" : undefined,
-                transition: "transform 0.15s"
-              }}
-            >
-              <path d="M4 5l8 6 8-6" />
-            </svg>
-          </button>
-        </div>
-      )}
-
-      {/* While the panel is open, a one-line hint that cards are draggable */}
-      {foldersExpanded && (
-        <div style={{ textAlign: "center", fontSize: 12, opacity: 0.55, marginTop: 6 }}>
-          Drag a quiz onto a folder to file it
-        </div>
-      )}
-
       {records.length === 0 ? (
         <p style={{ textAlign: "center", opacity: 0.7, marginTop: 40 }}>
           No quizzes yet. Complete a quiz and it will show up here.
@@ -846,7 +686,7 @@ export default function HistoryPage() {
           style={{
             // Tight under the expand toggle / drag hint; the original 20 only
             // applies when there are no folders (and so no toggle) above.
-            marginTop: foldersExpanded ? 4 : folders.length > 0 ? 6 : 20,
+            marginTop: 20,
             display: "flex",
             flexDirection: "column",
             gap: 12
@@ -861,11 +701,9 @@ export default function HistoryPage() {
             return (
               <div
                 key={r.id}
-                // Draggable only while the folder panel is open — dragging a
-                // card onto a folder up there files it.
-                draggable={foldersExpanded}
+                // Dragging a card onto a folder above files it there.
+                draggable
                 onDragStart={(e) => {
-                  if (!foldersExpanded) return;
                   e.dataTransfer.effectAllowed = "copy";
                   e.dataTransfer.setData("text/plain", r.id);
                   setDraggingQuiz(r.id);
@@ -880,7 +718,7 @@ export default function HistoryPage() {
                   display: "flex",
                   alignItems: "center",
                   gap: 14,
-                  cursor: foldersExpanded ? "grab" : undefined,
+                  cursor: "grab",
                   opacity: draggingQuiz === r.id ? 0.4 : 1,
                   padding: "14px 34px 14px 14px", // right room for the ⋯ button
                   border: "1px solid #888",
