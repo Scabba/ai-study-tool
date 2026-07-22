@@ -33,6 +33,13 @@ const CHIP_LIMIT = 2;
 // straight into rename mode, so this is only ever visible for a moment.
 const NEW_FOLDER_NAME = "New folder";
 
+// With this many folders the wrapped bar starts eating the page, so it clamps
+// to two rows and grows an expand toggle. Below it, everything always shows.
+const FOLDER_COLLAPSE_AT = 20;
+// Two 38px rows plus the 8px gap between them; row three starts past this and
+// is hidden whole — uniform row heights mean nothing is ever half-clipped.
+const COLLAPSED_BAR_HEIGHT = 38 + 8 + 38;
+
 function scoreColor(pct: number): string {
   if (pct >= 70) return GREEN;
   if (pct < 50) return RED;
@@ -185,6 +192,9 @@ export default function HistoryPage() {
   // Quiz cards can be dragged onto a folder to file them.
   const [draggingQuiz, setDraggingQuiz] = useState<string | null>(null);
   const [quizDropTarget, setQuizDropTarget] = useState<string | null>(null);
+  // Only meaningful at FOLDER_COLLAPSE_AT+ folders, where the bar clamps to
+  // two rows until expanded.
+  const [foldersExpanded, setFoldersExpanded] = useState(false);
 
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -516,7 +526,8 @@ export default function HistoryPage() {
       </div>
 
       {/* Folder bar: every folder, wrapping onto as many rows as needed.
-          Drag a folder to reorder; drag a quiz card onto one to file it. */}
+          Drag a folder to reorder; drag a quiz card onto one to file it.
+          At FOLDER_COLLAPSE_AT+ folders it clamps to two rows until expanded. */}
         <div
           onDragOver={(e) => {
             if (draggingFolder) e.preventDefault();
@@ -525,7 +536,12 @@ export default function HistoryPage() {
             display: "flex",
             flexWrap: "wrap",
             gap: 8,
-            marginTop: 24
+            marginTop: 24,
+            maxHeight:
+              folders.length >= FOLDER_COLLAPSE_AT && !foldersExpanded
+                ? COLLAPSED_BAR_HEIGHT
+                : undefined,
+            overflow: "hidden"
           }}
         >
           {folders.map((f) =>
@@ -677,6 +693,48 @@ export default function HistoryPage() {
           </button>
         </div>
 
+      {/* Wide, short toggle — only once the folder bar is big enough to clamp */}
+      {folders.length >= FOLDER_COLLAPSE_AT && (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 6 }}>
+          <button
+            onClick={() => setFoldersExpanded((v) => !v)}
+            aria-expanded={foldersExpanded}
+            aria-label={foldersExpanded ? "Collapse folders" : "Expand folders"}
+            title={foldersExpanded ? "Collapse folders" : "Show all folders"}
+            style={{
+              width: 180,
+              height: 16,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              border: "1px solid #888",
+              borderRadius: 3,
+              background: "transparent",
+              color: "#cbd5e1",
+              cursor: "pointer"
+            }}
+          >
+            <svg
+              width="14"
+              height="10"
+              viewBox="0 0 24 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                transform: foldersExpanded ? "rotate(180deg)" : undefined,
+                transition: "transform 0.15s"
+              }}
+            >
+              <path d="M4 5l8 6 8-6" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {records.length === 0 ? (
         <p style={{ textAlign: "center", opacity: 0.7, marginTop: 40 }}>
           No quizzes yet. Complete a quiz and it will show up here.
@@ -686,7 +744,8 @@ export default function HistoryPage() {
           style={{
             // Tight under the expand toggle / drag hint; the original 20 only
             // applies when there are no folders (and so no toggle) above.
-            marginTop: 20,
+            // Tighter when the expand toggle sits above the list.
+            marginTop: folders.length >= FOLDER_COLLAPSE_AT ? 6 : 20,
             display: "flex",
             flexDirection: "column",
             gap: 12
