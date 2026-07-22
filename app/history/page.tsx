@@ -184,6 +184,11 @@ export default function HistoryPage() {
   // Right-click / long-press menu on a folder: which folder and where.
   const [ctxMenu, setCtxMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<Folder | null>(null);
+  // Expanded folder panel: the strip wraps to show every folder, and quiz cards
+  // become draggable so they can be dropped onto a folder to file them.
+  const [foldersExpanded, setFoldersExpanded] = useState(false);
+  const [draggingQuiz, setDraggingQuiz] = useState<string | null>(null);
+  const [quizDropTarget, setQuizDropTarget] = useState<string | null>(null);
 
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
@@ -425,6 +430,14 @@ export default function HistoryPage() {
     setCtxMenu({ folderId, x, y });
   }
 
+  // A quiz card was dropped on a folder in the expanded panel.
+  async function fileQuizInFolder(quizId: string, folderId: string) {
+    addQuizToFolder(quizId, folderId);
+    setDraggingQuiz(null);
+    setQuizDropTarget(null);
+    await refreshAndSync();
+  }
+
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -495,7 +508,7 @@ export default function HistoryPage() {
       {/* Folder bar: the folders scroll, the + and the sort menu don't. The sort
           control sits outside the scrolling strip so it stays reachable. */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24 }}>
-        {scroll.left && (
+        {!foldersExpanded && scroll.left && (
           <button onClick={() => scrollStrip(-1)} aria-label="Scroll folders left" style={scrollBtn}>
             <Chevron dir="left" />
           </button>
@@ -505,16 +518,20 @@ export default function HistoryPage() {
           ref={stripRef}
           onScroll={syncScroll}
           // Dragging a folder near either edge scrolls the strip, so it can be
-          // carried to slots that are out of view.
+          // carried to slots that are out of view. (Moot while expanded — the
+          // panel wraps instead of scrolling.)
           onDragOver={(e) => {
             if (!draggingFolder) return;
             e.preventDefault();
-            autoScrollOnDrag(e.clientX);
+            if (!foldersExpanded) autoScrollOnDrag(e.clientX);
           }}
           style={{
             display: "flex",
             gap: 8,
-            overflowX: "auto",
+            // Expanded: wrap to show every folder at once. Collapsed: one
+            // scrolling row.
+            flexWrap: foldersExpanded ? "wrap" : "nowrap",
+            overflowX: foldersExpanded ? "visible" : "auto",
             scrollbarWidth: "none",
             flex: 1,
             minWidth: 0
@@ -562,11 +579,25 @@ export default function HistoryPage() {
                   setDraggingFolder(f.id);
                 }}
                 onDragOver={(e) => {
+                  if (draggingQuiz) {
+                    // A quiz is being dragged over: this folder is a drop target.
+                    e.preventDefault();
+                    if (quizDropTarget !== f.id) setQuizDropTarget(f.id);
+                    return;
+                  }
                   if (!draggingFolder) return;
                   e.preventDefault(); // mark this a valid drop target
                   reorderOnHover(f.id);
                 }}
+                onDragLeave={() => {
+                  if (draggingQuiz && quizDropTarget === f.id) setQuizDropTarget(null);
+                }}
                 onDrop={(e) => {
+                  if (draggingQuiz) {
+                    e.preventDefault();
+                    fileQuizInFolder(draggingQuiz, f.id);
+                    return;
+                  }
                   if (draggingFolder) e.preventDefault();
                 }}
                 onDragEnd={commitOrder}
@@ -607,8 +638,15 @@ export default function HistoryPage() {
                   height: 38,
                   padding: "0 14px",
                   borderRadius: 3,
-                  border: "2px solid #888",
-                  background: draggingFolder === f.id ? "rgba(136,136,136,0.15)" : "transparent",
+                  // Light blue when a dragged quiz hovers it, grey while it's
+                  // the folder being reordered.
+                  border: `2px solid ${quizDropTarget === f.id ? SORT_HL : "#888"}`,
+                  background:
+                    quizDropTarget === f.id
+                      ? FOLDER_SELECTED
+                      : draggingFolder === f.id
+                        ? "rgba(136,136,136,0.15)"
+                        : "transparent",
                   color: "inherit",
                   fontSize: 15,
                   textDecoration: "none",
@@ -648,7 +686,7 @@ export default function HistoryPage() {
           </button>
         </div>
 
-        {scroll.right && (
+        {!foldersExpanded && scroll.right && (
           <button onClick={() => scrollStrip(1)} aria-label="Scroll folders right" style={scrollBtn}>
             <Chevron dir="right" />
           </button>
@@ -712,6 +750,61 @@ export default function HistoryPage() {
         </div>
       </div>
 
+      {/* Wide, short toggle under the folder bar: expands the strip into a
+          wrapped panel showing every folder, where quiz cards can be dragged
+          onto a folder to file them. */}
+      {folders.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 6 }}>
+          <button
+            onClick={() => setFoldersExpanded((v) => !v)}
+            aria-expanded={foldersExpanded}
+            aria-label={foldersExpanded ? "Collapse folders" : "Expand folders"}
+            title={
+              foldersExpanded
+                ? "Collapse folders"
+                : "Show all folders — drag quizzes onto them to file"
+            }
+            style={{
+              width: 180,
+              height: 16,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              border: "1px solid #888",
+              borderRadius: 3,
+              background: "transparent",
+              color: "#cbd5e1",
+              cursor: "pointer"
+            }}
+          >
+            <svg
+              width="14"
+              height="10"
+              viewBox="0 0 24 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                transform: foldersExpanded ? "rotate(180deg)" : undefined,
+                transition: "transform 0.15s"
+              }}
+            >
+              <path d="M4 5l8 6 8-6" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* While the panel is open, a one-line hint that cards are draggable */}
+      {foldersExpanded && (
+        <div style={{ textAlign: "center", fontSize: 12, opacity: 0.55, marginTop: 6 }}>
+          Drag a quiz onto a folder to file it
+        </div>
+      )}
+
       {records.length === 0 ? (
         <p style={{ textAlign: "center", opacity: 0.7, marginTop: 40 }}>
           No quizzes yet. Complete a quiz and it will show up here.
@@ -727,12 +820,27 @@ export default function HistoryPage() {
             return (
               <div
                 key={r.id}
+                // Draggable only while the folder panel is open — dragging a
+                // card onto a folder up there files it.
+                draggable={foldersExpanded}
+                onDragStart={(e) => {
+                  if (!foldersExpanded) return;
+                  e.dataTransfer.effectAllowed = "copy";
+                  e.dataTransfer.setData("text/plain", r.id);
+                  setDraggingQuiz(r.id);
+                }}
+                onDragEnd={() => {
+                  setDraggingQuiz(null);
+                  setQuizDropTarget(null);
+                }}
                 style={{
                   position: "relative",
                   zIndex: menuId === r.id || confirmDeleteId === r.id ? 30 : undefined,
                   display: "flex",
                   alignItems: "center",
                   gap: 14,
+                  cursor: foldersExpanded ? "grab" : undefined,
+                  opacity: draggingQuiz === r.id ? 0.4 : 1,
                   padding: "14px 34px 14px 14px", // right room for the ⋯ button
                   border: "1px solid #888",
                   borderRadius: 3
@@ -838,7 +946,9 @@ export default function HistoryPage() {
                       {r.questions} question{r.questions === 1 ? "" : "s"}
                     </span>
                     {" · "}
-                    {formatDate(r.date)}
+                    <span style={{ color: sortBy === "recent" ? SORT_HL : undefined }}>
+                      {formatDate(r.date)}
+                    </span>
                   </div>
 
                   {/* Expanded: every folder, wrapping onto its own rows, plus
