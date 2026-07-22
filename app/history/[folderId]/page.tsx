@@ -8,6 +8,7 @@ import {
   renameQuiz,
   renameFolder,
   deleteQuiz,
+  deleteFolder,
   type QuizRecord,
   type Folder
 } from "@/lib/stats";
@@ -46,6 +47,15 @@ function nameFontSize(name: string): number {
   return 13;
 }
 
+// Same idea for the big folder-name heading, scaled up.
+function titleFontSize(name: string): number {
+  const n = name.length;
+  if (n <= 18) return 40;
+  if (n <= 28) return 32;
+  if (n <= 40) return 26;
+  return 22;
+}
+
 function TrashIcon({ size = 14 }: { size?: number }) {
   return (
     <svg
@@ -79,6 +89,7 @@ export default function FolderPage() {
   const [editingQuiz, setEditingQuiz] = useState<string | null>(null);
   const [quizName, setQuizName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
 
   useEffect(() => {
@@ -141,6 +152,21 @@ export default function FolderPage() {
     deleteQuiz(id);
     setConfirmDeleteId(null);
     await sync();
+  }
+
+  // Delete the whole folder and go back to the history list. The quizzes it
+  // held are kept — deleteFolder only un-files them.
+  async function removeFolder() {
+    if (folder) deleteFolder(folder.id);
+    setConfirmDeleteFolder(false);
+    if (auth.current) {
+      try {
+        await saveStats(auth.current.client, auth.current.userId, loadStats());
+      } catch {
+        // best-effort
+      }
+    }
+    router.push("/history");
   }
 
   // Open a saved quiz on the main page in review mode.
@@ -245,7 +271,7 @@ export default function FolderPage() {
             <h1
               style={{
                 fontWeight: "bold",
-                fontSize: 40,
+                fontSize: titleFontSize(folder ? folder.name : "Folder not found"),
                 margin: 0,
                 minWidth: 0,
                 overflow: "hidden",
@@ -271,6 +297,32 @@ export default function FolderPage() {
                 <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
               </svg>
             )}
+          </button>
+        )}
+
+        {/* Delete this folder — red trash top-right of the header. Mirrors the
+            back arrow on the left; the title reserves 56px each side for both. */}
+        {folder && (
+          <button
+            onClick={() => setConfirmDeleteFolder(true)}
+            aria-label="Delete folder"
+            title="Delete folder"
+            style={{
+              position: "absolute",
+              right: 0,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              color: RED,
+              cursor: "pointer"
+            }}
+          >
+            <TrashIcon size={24} />
           </button>
         )}
       </div>
@@ -478,6 +530,72 @@ export default function FolderPage() {
               </button>
               <button
                 onClick={() => removeQuiz(confirmDeleteId)}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteFolder && folder && (
+        <div
+          onClick={() => setConfirmDeleteFolder(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: 3,
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Are you sure you want to delete{" "}
+              <span style={{ fontWeight: "bold" }}>&ldquo;{folder.name}&rdquo;</span>?
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteFolder(false)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={removeFolder}
                 style={{
                   border: `1px solid ${RED}`,
                   borderRadius: 3,

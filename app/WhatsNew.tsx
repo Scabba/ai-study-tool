@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.6";
+const APP_VERSION = "0.7";
 
 const WHATS_NEW = [
   "🎨 Customizable fonts and color palettes",

@@ -5,9 +5,10 @@ export const metadata = { title: "Updates — Athenia" };
 // Newest first. Add a new entry at the top each release.
 const UPDATES = [
   {
-    version: "0.6.5",
-    date: "July 21",
+    version: "0.7",
+    date: "July 23",
     items: [
+      "Reworked Quiz History page",
       "Improved generated question quality",
       "Mobile UI improvements to improve usability and accessibility",
       "Moderation of prompts to ensure appropriate generated content",
