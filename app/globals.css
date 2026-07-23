@@ -3,6 +3,10 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Customization defaults (overridden by applyTheme from /customize). */
+  --btn-radius: 3px;
+  --quiz-radius: 3px;
+  --quiz-gap: 10px;
 }
 
 @theme inline {

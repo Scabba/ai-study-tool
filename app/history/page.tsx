@@ -181,8 +181,10 @@ export default function HistoryPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<SortKey>("recent");
   const [sortOpen, setSortOpen] = useState(false);
-  // The folder currently being dragged to reorder the strip (its id).
+  // The folder currently being dragged to reorder the strip (its id), and the
+  // slot index it would drop into (shown as an indicator, applied on drop).
   const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   // A folder created via + that hasn't been confirmed with Enter yet. Escape or
   // clicking away deletes it again — naming it is what actually creates it.
   const [newFolderId, setNewFolderId] = useState<string | null>(null);
@@ -200,12 +202,6 @@ export default function HistoryPage() {
   const menuRef = useRef<HTMLDivElement>(null);
   const sortRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
-  // Reorder dwell: a dragged folder must hover a target briefly before the strip
-  // reshuffles, so dragging across several folders doesn't shuffle on the way.
-  const dwell = useRef<{ target: string | null; timer: ReturnType<typeof setTimeout> | null }>({
-    target: null,
-    timer: null
-  });
   // Long-press bookkeeping for the touch version of the context menu.
   const longPress = useRef<{ timer: ReturnType<typeof setTimeout> | null; fired: boolean }>({
     timer: null,
@@ -354,36 +350,32 @@ export default function HistoryPage() {
     await refreshAndSync();
   }
 
-  // Reorder the strip while dragging — but only after the dragged folder has
-  // hovered the same target for a beat. Without the dwell, every folder passed
-  // on the way reshuffled instantly, which made dragging across several
-  // folders to a far slot nearly impossible.
-  function reorderOnHover(targetId: string) {
-    if (!draggingFolder || draggingFolder === targetId) return;
-    if (dwell.current.target === targetId) return; // already pending
-    if (dwell.current.timer) clearTimeout(dwell.current.timer);
-    dwell.current.target = targetId;
-    dwell.current.timer = setTimeout(() => {
-      dwell.current.timer = null;
-      setFolders((prev) => {
-        const from = prev.findIndex((f) => f.id === draggingFolder);
-        const to = prev.findIndex((f) => f.id === targetId);
-        if (from === -1 || to === -1 || from === to) return prev;
-        const next = [...prev];
-        const [moved] = next.splice(from, 1);
-        next.splice(to, 0, moved);
-        return next;
-      });
-    }, 250);
+  // While dragging over a folder, mark where the dragged one would land — before
+  // this folder or after it, by which half the cursor is on. The strip does NOT
+  // reshuffle during the drag (that fought the drag ghost and caused jank); a
+  // thin indicator shows the target slot and the actual move happens on drop.
+  function markDrop(index: number, e: React.DragEvent) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const after = e.clientX > rect.left + rect.width / 2;
+    const idx = after ? index + 1 : index;
+    if (dropIndex !== idx) setDropIndex(idx);
   }
 
-  // Commit the current strip order once the drag ends.
+  // Perform the move once the drag ends: splice the dragged folder into the
+  // marked slot, persist, and clear the drag state.
   async function commitOrder() {
-    if (dwell.current.timer) clearTimeout(dwell.current.timer);
-    dwell.current.target = null;
-    dwell.current.timer = null;
-    reorderFolders(folders.map((f) => f.id));
+    const from = folders.findIndex((f) => f.id === draggingFolder);
+    let to = dropIndex;
     setDraggingFolder(null);
+    setDropIndex(null);
+    if (from === -1 || to === null) return;
+    if (to > from) to -= 1; // removing `from` shifts everything after it left
+    if (to === from) return; // dropped back where it started
+    const next = [...folders];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setFolders(next);
+    reorderFolders(next.map((f) => f.id));
     if (auth.current) {
       try {
         await saveStats(auth.current.client, auth.current.userId, loadStats());
@@ -544,7 +536,7 @@ export default function HistoryPage() {
             overflow: "hidden"
           }}
         >
-          {folders.map((f) =>
+          {folders.map((f, index) =>
             editingFolderId === f.id ? (
               <input
                 key={f.id}
@@ -594,7 +586,7 @@ export default function HistoryPage() {
                   }
                   if (!draggingFolder) return;
                   e.preventDefault(); // mark this a valid drop target
-                  reorderOnHover(f.id);
+                  markDrop(index, e);
                 }}
                 onDragLeave={() => {
                   if (draggingQuiz && quizDropTarget === f.id) setQuizDropTarget(null);
@@ -659,7 +651,17 @@ export default function HistoryPage() {
                   textDecoration: "none",
                   whiteSpace: "nowrap",
                   cursor: "grab",
-                  opacity: draggingFolder === f.id ? 0.4 : 1
+                  opacity: draggingFolder === f.id ? 0.4 : 1,
+                  // Drop indicator: a blue bar on the side the folder would land
+                  // — left of this chip for its index, right of it for the next.
+                  // Inset shadow so it never shifts the layout (which is what
+                  // made the old live-reshuffle version jank).
+                  boxShadow:
+                    draggingFolder && dropIndex === index
+                      ? `inset 3px 0 0 ${SORT_HL}`
+                      : draggingFolder && dropIndex === index + 1
+                        ? `inset -3px 0 0 ${SORT_HL}`
+                        : undefined
                 }}
               >
                 <FolderIcon />

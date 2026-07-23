@@ -1,8 +1,14 @@
-// Athenia customization: fonts and color palettes, chosen in the palette panel.
-// Stored in localStorage and applied as CSS variables / body font, so every
-// page picks them up. ThemeLoader applies the saved theme on each page load.
+// Athenia customization: fonts, colour palettes, button shape, and quiz look,
+// chosen on the /customize page. Stored in localStorage and applied as CSS
+// variables / body font, so every page picks them up. ThemeLoader applies the
+// saved theme on each page load (before first paint).
 
-export type ThemeChoice = { font: FontId; palette: PaletteId };
+export type ThemeChoice = {
+  font: FontId;
+  palette: PaletteId;
+  buttonShape: ButtonShapeId;
+  quizStyle: QuizStyleId;
+};
 
 export const FONTS = [
   // All three are already bundled by app/layout.tsx as CSS variables — no new
@@ -26,9 +32,36 @@ export const PALETTES = [
 ] as const;
 export type PaletteId = (typeof PALETTES)[number]["id"];
 
-export const DEFAULT_THEME: ThemeChoice = { font: "inter", palette: "midnight" };
+// Button corner style, applied app-wide via the --btn-radius CSS variable.
+// Buttons that opt in read `var(--btn-radius)` instead of a hard-coded 3.
+export const BUTTON_SHAPES = [
+  { id: "sharp", name: "Sharp", radius: "3px" },
+  { id: "rounded", name: "Rounded", radius: "10px" },
+  { id: "pill", name: "Pill", radius: "999px" }
+] as const;
+export type ButtonShapeId = (typeof BUTTON_SHAPES)[number]["id"];
+
+// How quiz question cards and their answer options look. Drives --quiz-radius
+// (option corners) and --quiz-gap (space between options); the quiz reads both.
+export const QUIZ_STYLES = [
+  { id: "boxed", name: "Boxed", radius: "3px", gap: "10px" },
+  { id: "soft", name: "Soft", radius: "12px", gap: "12px" },
+  { id: "compact", name: "Compact", radius: "3px", gap: "4px" }
+] as const;
+export type QuizStyleId = (typeof QUIZ_STYLES)[number]["id"];
+
+export const DEFAULT_THEME: ThemeChoice = {
+  font: "inter",
+  palette: "midnight",
+  buttonShape: "sharp",
+  quizStyle: "boxed"
+};
 
 const KEY = "atheniaTheme";
+
+function pick<T extends { id: string }>(list: readonly T[], id: unknown, fallback: T["id"]): T["id"] {
+  return list.some((x) => x.id === id) ? (id as T["id"]) : fallback;
+}
 
 export function loadTheme(): ThemeChoice {
   try {
@@ -36,8 +69,10 @@ export function loadTheme(): ThemeChoice {
     if (!raw) return { ...DEFAULT_THEME };
     const t = JSON.parse(raw);
     return {
-      font: FONTS.some((f) => f.id === t.font) ? t.font : DEFAULT_THEME.font,
-      palette: PALETTES.some((p) => p.id === t.palette) ? t.palette : DEFAULT_THEME.palette
+      font: pick(FONTS, t.font, DEFAULT_THEME.font),
+      palette: pick(PALETTES, t.palette, DEFAULT_THEME.palette),
+      buttonShape: pick(BUTTON_SHAPES, t.buttonShape, DEFAULT_THEME.buttonShape),
+      quizStyle: pick(QUIZ_STYLES, t.quizStyle, DEFAULT_THEME.quizStyle)
     };
   } catch {
     return { ...DEFAULT_THEME };
@@ -53,11 +88,15 @@ export function saveTheme(t: ThemeChoice) {
 }
 
 // Write the choice into the live page: palette overrides the CSS variables the
-// whole app already reads; font swaps the body font stack.
+// whole app already reads; font swaps the body font stack; button shape and
+// quiz style publish CSS variables that opted-in elements consume.
 export function applyTheme(t: ThemeChoice) {
   const palette = PALETTES.find((p) => p.id === t.palette) ?? PALETTES[0];
   const font = FONTS.find((f) => f.id === t.font) ?? FONTS[0];
+  const shape = BUTTON_SHAPES.find((b) => b.id === t.buttonShape) ?? BUTTON_SHAPES[0];
+  const quiz = QUIZ_STYLES.find((q) => q.id === t.quizStyle) ?? QUIZ_STYLES[0];
   const root = document.documentElement;
+
   if (t.palette === DEFAULT_THEME.palette) {
     // Default: clear the overrides so the stock light/dark CSS rules apply.
     root.style.removeProperty("--background");
@@ -67,4 +106,8 @@ export function applyTheme(t: ThemeChoice) {
     root.style.setProperty("--foreground", palette.fg);
   }
   document.body.style.fontFamily = t.font === DEFAULT_THEME.font ? "" : font.css;
+
+  root.style.setProperty("--btn-radius", shape.radius);
+  root.style.setProperty("--quiz-radius", quiz.radius);
+  root.style.setProperty("--quiz-gap", quiz.gap);
 }

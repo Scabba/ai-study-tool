@@ -36,15 +36,6 @@ import {
 } from "@/lib/stats";
 import { fetchStats, saveStats } from "@/lib/userStats";
 import { classifySubject } from "@/lib/subjects";
-import {
-  FONTS,
-  PALETTES,
-  DEFAULT_THEME,
-  applyTheme,
-  loadTheme,
-  saveTheme,
-  type ThemeChoice
-} from "@/lib/theme";
 
 // A multiple-choice question coming back from the server
 type MCQuestion = {
@@ -318,8 +309,6 @@ export default function Home({
   const [showStats, setShowStats] = useState(false); // the Stats panel
   const [statsData, setStatsData] = useState<Stats | null>(null); // snapshot shown in the Stats panel
   const [showPricing, setShowPricing] = useState(false); // the Athenia Pro upgrade screen
-  const [showCustomize, setShowCustomize] = useState(false); // the palette / customization panel
-  const [theme, setTheme] = useState<ThemeChoice>(DEFAULT_THEME); // font + palette choice
   const [isPro, setIsPro] = useState(initialIsPro); // does this account have an active subscription?
   // When streak-earned Pro runs out (ISO string), or null if none is banked.
   // The server owns this — see lib/proGrants.ts — the client only displays it.
@@ -626,7 +615,6 @@ export default function Home({
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     setStreak(loadStats().streak);
-    setTheme(loadTheme()); // panel state only; ThemeLoader already applied it
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
@@ -1557,7 +1545,7 @@ export default function Home({
               background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
               color: yellow ? "#1a1a1a" : "white",
               fontWeight: "bold",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               fontSize: 20
             }}
           >
@@ -1573,7 +1561,7 @@ export default function Home({
               color: yellow ? "#1a1a1a" : "white",
               fontWeight: "bold",
               border: "none",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               fontSize: 16,
               cursor: "pointer"
             }}
@@ -1593,7 +1581,7 @@ export default function Home({
               background: "transparent",
               color: RECHALLENGE_YELLOW,
               border: `2px solid ${RECHALLENGE_BTN}`,
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               fontWeight: "bold",
               fontSize: 16,
               cursor: rechallengeLoading ? "default" : "pointer"
@@ -1629,7 +1617,7 @@ export default function Home({
           alignItems: "center",
           justifyContent: "center",
           padding: 0,
-          borderRadius: 3,
+          borderRadius: "var(--btn-radius, 3px)",
           // Match Generate: borderless on the same fill, so it reads as part of
           // the pair instead of an outlined box stuck to its side.
           border: "none",
@@ -1655,15 +1643,6 @@ export default function Home({
     );
 
   // Pick a font/palette in the customization panel: apply live and persist.
-  const pickTheme = (patch: Partial<ThemeChoice>) => {
-    setTheme((prev) => {
-      const next = { ...prev, ...patch };
-      applyTheme(next);
-      saveTheme(next);
-      return next;
-    });
-  };
-
   // The streak bar under the title: a thin rounded track that fills toward the
   // next reward milestone. Light orange normally; light blue while a freeze is
   // banked (5 quizzes in a day) and protecting the streak.
@@ -2032,11 +2011,10 @@ export default function Home({
           </button>
         )}
 
-        {/* Customize — circular button with a minimal palette + brush icon.
-            Not wired to anything yet (the customization panel comes later). */}
+        {/* Customize — opens the full customization page */}
         {!isMobile && (
-          <button
-            onClick={() => setShowCustomize(true)}
+          <Link
+            href="/customize"
             aria-label="Customize"
             title="Customize"
             style={{
@@ -2070,128 +2048,10 @@ export default function Home({
               <circle cx="8.5" cy="7.5" r="1.4" fill="currentColor" stroke="none" />
               <circle cx="6.5" cy="12.5" r="1.4" fill="currentColor" stroke="none" />
             </svg>
-          </button>
+          </Link>
         )}
       </div>
 
-      {/* Customization panel — fonts and color palettes */}
-      {showCustomize && (
-        <div
-          onClick={() => setShowCustomize(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 2000,
-            padding: 20
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 380,
-              maxWidth: "100%",
-              background: "var(--background)",
-              color: "var(--foreground)",
-              border: "1px solid #888",
-              borderRadius: 3,
-              padding: 24,
-              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
-            }}
-          >
-            <div style={{ fontWeight: "bold", fontSize: 22, textAlign: "center", marginBottom: 18 }}>
-              Customize
-            </div>
-
-            <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 8 }}>Font</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {FONTS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => pickTheme({ font: f.id })}
-                  style={{
-                    flex: 1,
-                    padding: "10px 0",
-                    border:
-                      theme.font === f.id ? `2px solid ${STREAK_FROZEN_BLUE}` : "1px solid #888",
-                    borderRadius: 3,
-                    background: "transparent",
-                    color: "inherit",
-                    fontSize: 15,
-                    fontFamily: f.css, // each button previews its own font
-                    cursor: "pointer"
-                  }}
-                >
-                  {f.name}
-                </button>
-              ))}
-            </div>
-
-            <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 8px" }}>Palette</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-              {PALETTES.map((pal) => (
-                <button
-                  key={pal.id}
-                  onClick={() => pickTheme({ palette: pal.id })}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "10px 0 8px",
-                    border:
-                      theme.palette === pal.id
-                        ? `2px solid ${STREAK_FROZEN_BLUE}`
-                        : "1px solid #888",
-                    borderRadius: 3,
-                    background: "transparent",
-                    color: "inherit",
-                    cursor: "pointer"
-                  }}
-                >
-                  {/* swatch: the palette's background with its text colour dot */}
-                  <span
-                    style={{
-                      width: 26,
-                      height: 26,
-                      borderRadius: 3,
-                      background: pal.bg,
-                      border: "1px solid #888",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center"
-                    }}
-                  >
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.fg }} />
-                  </span>
-                  <span style={{ fontSize: 12 }}>{pal.name}</span>
-                </button>
-              ))}
-            </div>
-
-            <button
-              onClick={() => pickTheme({ ...DEFAULT_THEME })}
-              style={{
-                marginTop: 18,
-                width: "100%",
-                padding: "8px 0",
-                border: "1px solid #888",
-                borderRadius: 3,
-                background: "transparent",
-                color: "inherit",
-                fontSize: 13,
-                cursor: "pointer",
-                opacity: 0.8
-              }}
-            >
-              Reset to default
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Athenia Pro upgrade screen */}
       <PricingModal open={showPricing} onClose={() => setShowPricing(false)} isPro={isPro} />
@@ -2851,7 +2711,7 @@ export default function Home({
                   }
                 },
                 { label: "Quiz History", href: "/history" },
-                { label: "Customize", act: () => setShowCustomize(true) }
+                { label: "Customize", href: "/customize" }
               ].map((item, i) => {
                 const style = {
                   padding: "12px 16px",
@@ -3094,7 +2954,7 @@ export default function Home({
             background: ACCENT_BG,
             color: ACCENT_TEXT,
             border: "none",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             fontSize: 16,
             cursor: loading ? "default" : "pointer"
           }}
@@ -3310,7 +3170,7 @@ export default function Home({
                   background: ACCENT_BG,
                   color: ACCENT_TEXT,
                   border: "none",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
                 }}
@@ -3816,7 +3676,7 @@ export default function Home({
                   background: ACCENT_BG,
                   color: ACCENT_TEXT,
                   border: "none",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
                 }}
@@ -3956,7 +3816,7 @@ export default function Home({
                       width: "fit-content",  // ...but only as wide as its content (so you click the dot/letter/text, not the whole row)
                       alignItems: "center",
                       gap: 6,
-                      marginBottom: 10,
+                      marginBottom: "var(--quiz-gap, 10px)", // quiz-style density
                       cursor: revealed ? "default" : "pointer"
                     }}
                   >
