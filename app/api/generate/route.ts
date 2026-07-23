@@ -90,6 +90,12 @@ const SYS_TF =
   "You generate true/false study statements from notes. " +
   "You always respond with valid JSON only, no extra text." +
   SOURCE_ONLY;
+const SYS_WRITTEN =
+  "You generate short-answer study questions from notes — questions a student " +
+  "answers by writing a sentence or two. Each carries a concise model answer " +
+  "(the essential idea, 1-2 sentences). You always respond with valid JSON " +
+  "only, no extra text." +
+  SOURCE_ONLY;
 
 // The "don't repeat these" note appended to a prompt when we already have some
 // questions and are topping up. `noun` matches the wording each caller expects.
@@ -146,6 +152,60 @@ function isValidTF(q: TFQ): boolean {
   if (!q.question?.trim()) return false;
   const a = (q.answer ?? "").toString().trim().toLowerCase();
   return a === "true" || a === "false";
+}
+
+// A written (short-answer) question: a prompt plus a concise model answer the
+// grader compares against.
+type WrittenQ = {
+  question: string;
+  answer: string; // the model answer
+  difficulty: string;
+};
+
+function isValidWritten(q: WrittenQ): boolean {
+  return !!q.question?.trim() && !!q.answer?.trim();
+}
+
+// Ask the model for `count` short-answer questions, each with a model answer.
+async function makeWritten(
+  text: string,
+  count: number,
+  avoid: string[],
+  level: string
+): Promise<WrittenQ[]> {
+  const response = await client.chat.completions.create({
+    model: GEN_MODEL,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYS_WRITTEN },
+      {
+        role: "user",
+        content: `Create exactly ${count} short-answer questions about the source material below.
+
+Rules:
+- The "questions" array MUST contain exactly ${count} items. ONLY as a last resort — when it is genuinely IMPOSSIBLE to make even one relevant question because the source is empty, pure gibberish, or random characters — return {"questions": []} instead.
+- Each question asks the student to explain, define, or describe a concept in their own words — answerable in one or two sentences.
+- "answer" is a concise MODEL answer: the essential idea in 1-2 sentences, not a whole essay. It's what the student's response is graded against for meaning.
+- Draw questions from ACROSS all of the source material (beginning, middle, and end).
+- Use a mix of easy, medium, and hard, and label each one.${levelNote(level)}${avoidNote(avoid)}
+
+Return JSON in exactly this shape:
+{
+  "questions": [
+    {
+      "question": "the question text",
+      "answer": "the concise model answer",
+      "difficulty": "easy"
+    }
+  ]
+}
+
+SOURCE MATERIAL:
+${text}`
+      }
+    ]
+  });
+  return parseQuestions<WrittenQ>(response);
 }
 
 // Split notes into `n` contiguous parts so each batch covers a different section.
@@ -710,6 +770,10 @@ export async function POST(req: Request) {
   // True/False count: 0/5/10/15/20, default 0 (none)
   const tfCount = allowed.includes(body.tfCount) ? body.tfCount : 0;
 
+  // Written (short-answer) count: 0/5/10/15/20, default 0 (none). Generated from
+  // the text transcript; not produced for image-only sources yet.
+  const writtenCount = allowed.includes(body.writtenCount) ? body.writtenCount : 0;
+
   // Rechallenge: the questions the student got wrong, if this is a rechallenge run.
   type WrongQ = {
     question: string;
@@ -1082,7 +1146,7 @@ export async function POST(req: Request) {
 
         // TF was the only thing requested and none came out -> tell the user
         // (when MC was also requested, its own error message already covers this)
-        if (count === 0 && sentTF === 0) {
+        if (count === 0 && writtenCount === 0 && sentTF === 0) {
           controller.enqueue(
             encoder.encode(
               JSON.stringify({
@@ -1090,6 +1154,52 @@ export async function POST(req: Request) {
                   images.length > 0
                     ? "We couldn't identify anything in that image. Try a clearer picture."
                     : "We couldn't make relevant questions from that text."
+              }) + "\n"
+            )
+          );
+        }
+      }
+
+      // --- Written (short-answer) questions --------------------------------
+      // Text-based only (uses the transcript); image-only sources skip these.
+      if (writtenCount > 0 && text.trim()) {
+        const seenW = new Set<string>();
+        const sentWTexts: string[] = [];
+        let sentW = 0;
+
+        const sendWritten = (q: WrittenQ) => {
+          const key = q.question?.trim().toLowerCase();
+          if (!key || seen.has(key) || seenW.has(key) || sentW >= writtenCount) return;
+          if (!isValidWritten(q)) return;
+          seenW.add(key);
+          sentWTexts.push(q.question);
+          sentW++;
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                type: "written",
+                question: q.question,
+                answer: q.answer,
+                difficulty: q.difficulty
+              }) + "\n"
+            )
+          );
+        };
+
+        let wAttempts = 0;
+        while (sentW < writtenCount && wAttempts < 3) {
+          const avoid = [...sentTexts, ...sentWTexts];
+          const batch = await makeWritten(text, writtenCount - sentW, avoid, level);
+          if (batch.length === 0) break;
+          for (const q of batch) sendWritten(q);
+          wAttempts++;
+        }
+
+        if (count === 0 && tfCount === 0 && sentW === 0) {
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                error: "We couldn't make relevant questions from that text."
               }) + "\n"
             )
           );

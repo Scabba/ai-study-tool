@@ -21,7 +21,8 @@ export const ANON_LIMITS = {
   generate: 3, // full quizzes (text only — other sources need an account)
   rechallenge: 10, // extension rounds, ~3 quizzes' worth
   hint: 30, // roughly one per question across those quizzes
-  assistant: 10 // chat messages to the AI assistant
+  assistant: 10, // chat messages to the AI assistant
+  grade: 30 // written-answer gradings, roughly one per question
 };
 
 // The caller's IP as Vercel sees it. x-forwarded-for is a comma-separated chain

@@ -56,7 +56,35 @@ type TFQuestion = {
   round?: number; // 0 = original quiz, 1+ = rechallenge extension rounds
 };
 
-type Question = MCQuestion | TFQuestion;
+// A written (short-answer) question — the student types a response that the AI
+// grades for meaning. `answer` is the model answer.
+type WrittenQuestion = {
+  type: "written";
+  question: string;
+  answer: string;
+  difficulty: string;
+  round?: number;
+};
+
+type Question = MCQuestion | TFQuestion | WrittenQuestion;
+
+// The AI's grade for one written answer (from /api/grade).
+type WrittenVerdict = "correct" | "partial" | "incorrect";
+type WrittenResult = {
+  status: "grading" | "done";
+  verdict?: WrittenVerdict;
+  feedback?: string;
+  modelAnswer?: string;
+  missingConcepts?: string[];
+  suggestion?: string;
+};
+
+// Points a written verdict is worth (partial = half credit).
+const WRITTEN_SCORE: Record<WrittenVerdict, number> = {
+  correct: 1,
+  partial: 0.5,
+  incorrect: 0
+};
 
 type Mode = "text" | "image" | "audio";
 
@@ -73,6 +101,8 @@ type QuizState = {
   submittedRounds: number;
   // Per-question hint state: "loading" while it's being generated, then the text.
   hints: Record<number, { status: "loading" | "done"; text?: string }>;
+  // Per-question grade for written answers (keyed by question index).
+  written: Record<number, WrittenResult>;
   loading: boolean; // a generation is streaming into this tab
   rechallengeLoading: boolean; // a rechallenge round is streaming into this tab
 };
@@ -82,6 +112,7 @@ const EMPTY_QUIZ: QuizState = {
   answers: {},
   submittedRounds: 0,
   hints: {},
+  written: {},
   loading: false,
   rechallengeLoading: false
 };
@@ -286,7 +317,7 @@ export default function Home({
   const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null); // video shown fullscreen
   // One quiz per tab; the active tab's is what the page renders.
   const [quizzes, setQuizzes] = useState<Record<Mode, QuizState>>(emptyQuizzes);
-  const { questions, answers, submittedRounds, hints, loading, rechallengeLoading } =
+  const { questions, answers, submittedRounds, hints, written, loading, rechallengeLoading } =
     quizzes[mode];
 
   // Patch one tab's quiz. Callers pass the tab explicitly, so a generation that
@@ -304,6 +335,7 @@ export default function Home({
   const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
   const [amount, setAmount] = useState(5); // how many multiple-choice questions to generate
   const [tfAmount, setTfAmount] = useState(0); // how many true/false questions (0 = none)
+  const [writtenAmount, setWrittenAmount] = useState(0); // how many written-answer questions (0 = none)
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
   const [showStats, setShowStats] = useState(false); // the Stats panel
@@ -343,7 +375,8 @@ export default function Home({
     gradeYear: null,
     instantFeedback: false,
     amount: 5,
-    tfAmount: 0
+    tfAmount: 0,
+    writtenAmount: 0
   }); // always holds the current settings (used to seed a brand-new account)
   // One in-flight generation per tab, so generating on Image can't cancel Text's.
   const genAbortRef = useRef<Record<Mode, AbortController | null>>({
@@ -460,6 +493,7 @@ export default function Home({
       if (typeof s.instantFeedback === "boolean") setInstantFeedback(s.instantFeedback);
       if (typeof s.amount === "number") setAmount(s.amount);
       if (typeof s.tfAmount === "number") setTfAmount(s.tfAmount);
+      if (typeof s.writtenAmount === "number") setWrittenAmount(s.writtenAmount);
       /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
       // ignore bad/missing saved data
@@ -471,7 +505,7 @@ export default function Home({
   // users also get the change mirrored to their account so it follows them across
   // devices; signed-out users just use localStorage as before.
   useEffect(() => {
-    const current = { difficulty, gradeYear, instantFeedback, amount, tfAmount };
+    const current = { difficulty, gradeYear, instantFeedback, amount, tfAmount, writtenAmount };
     latestSettings.current = current;
     if (skipFirstSave.current) {
       skipFirstSave.current = false;
@@ -491,7 +525,7 @@ export default function Home({
         saveSettings(authClient, authUserId, current);
       }, 500);
     }
-  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount, authClient, authUserId]);
+  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount, writtenAmount, authClient, authUserId]);
 
   // When a user signs in, load their account-wide settings — the cloud copy wins
   // across devices. If they have no saved row yet, seed it from whatever's set
@@ -509,6 +543,7 @@ export default function Home({
         setInstantFeedback(cloud.instantFeedback);
         setAmount(cloud.amount);
         setTfAmount(cloud.tfAmount);
+        setWrittenAmount(cloud.writtenAmount);
       } else {
         await saveSettings(authClient, authUserId, latestSettings.current);
       }
@@ -801,9 +836,12 @@ export default function Home({
     // Grade the current (not-yet-graded) round only. Find the first UNANSWERED
     // question within that round.
     const activeRound = submittedRounds;
-    const missing = questions.findIndex(
-      (q, i) => (q.round ?? 0) === activeRound && !answers[i]
-    );
+    // A written question counts as answered only once it's been graded (its own
+    // Submit Answer button); MC/TF just need a selection.
+    const missing = questions.findIndex((q, i) => {
+      if ((q.round ?? 0) !== activeRound) return false;
+      return q.type === "written" ? written[i]?.status !== "done" : !answers[i];
+    });
 
     if (missing !== -1) {
       // Scroll that question to the middle of the screen...
@@ -827,10 +865,17 @@ export default function Home({
           question: q.question,
           options: "options" in q ? q.options : undefined,
           correct: q.answer,
-          chosen: answers[i] ?? ""
+          chosen: answers[i] ?? "",
+          // A written question carries its AI verdict so history can show it.
+          verdict: q.type === "written" ? written[i]?.verdict : undefined
         }));
-      const correct = items.filter((it) => it.chosen === it.correct).length;
-      const pct = items.length ? Math.round((correct / items.length) * 100) : 0;
+      // Score with partial credit: written questions are worth their verdict
+      // (correct 1, partial 0.5, incorrect 0); MC/TF are 1 for a match.
+      const scored = items.reduce((sum, it) => {
+        if (it.verdict) return sum + WRITTEN_SCORE[it.verdict];
+        return sum + (it.chosen === it.correct ? 1 : 0);
+      }, 0);
+      const pct = items.length ? Math.round((scored / items.length) * 100) : 0;
       const quizText = items
         .map((it) => `${it.question} ${it.options ? Object.values(it.options).join(" ") : ""}`)
         .join(" ");
@@ -924,6 +969,155 @@ export default function Home({
     }
   }
 
+  // Grade one written answer with the AI. A single call returns the verdict and
+  // all the feedback; the result feeds the round's score when it's submitted.
+  async function gradeWritten(i: number) {
+    const q = questions[i];
+    if (!q || q.type !== "written") return;
+    const response = (answers[i] ?? "").trim();
+    if (!response) {
+      setFlashIndex(i);
+      setTimeout(() => setFlashIndex(null), 3000);
+      return;
+    }
+    if (written[i]?.status === "grading" || written[i]?.status === "done") return;
+    const gradeMode = mode;
+    patchQuiz(gradeMode, (s) => ({ written: { ...s.written, [i]: { status: "grading" } } }));
+    try {
+      const res = await fetch("/api/grade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q.question, expected: q.answer, response })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.verdict) throw new Error(data?.error ?? "grade failed");
+      patchQuiz(gradeMode, (s) => ({
+        written: {
+          ...s.written,
+          [i]: {
+            status: "done",
+            verdict: data.verdict as WrittenVerdict,
+            feedback: data.feedback,
+            modelAnswer: data.modelAnswer,
+            missingConcepts: data.missingConcepts,
+            suggestion: data.suggestion
+          }
+        }
+      }));
+    } catch {
+      // Failed — drop the state so the student can submit again.
+      patchQuiz(gradeMode, (s) => {
+        const next = { ...s.written };
+        delete next[i];
+        return { written: next };
+      });
+      setGenError("Couldn't grade that answer. Try again."); // DRAFT COPY
+    }
+  }
+
+  // The written-answer UI for one question: a text box + Submit Answer, then the
+  // AI's verdict and feedback once graded.
+  const renderWritten = (q: WrittenQuestion, i: number, qRound: number) => {
+    const res = written[i];
+    const graded = res?.status === "done";
+    const grading = res?.status === "grading";
+    const roundGraded = qRound < submittedRounds;
+    const locked = graded || grading || roundGraded;
+
+    const badge =
+      res?.verdict === "correct"
+        ? { text: "✅ Correct", color: CORRECT_GREEN }
+        : res?.verdict === "partial"
+          ? { text: "🟡 Partially Correct", color: HINT_YELLOW }
+          : { text: "❌ Incorrect", color: WRONG_RED };
+
+    return (
+      <div>
+        <textarea
+          value={answers[i] ?? ""}
+          onChange={(e) =>
+            patchQuiz(mode, (s) => ({ answers: { ...s.answers, [i]: e.target.value } }))
+          }
+          disabled={locked}
+          placeholder="Type your answer…"
+          rows={3}
+          style={{
+            width: "100%",
+            maxWidth: 560,
+            display: "block",
+            resize: "vertical",
+            padding: 10,
+            fontSize: 15,
+            fontFamily: "inherit",
+            background: "transparent",
+            color: "inherit",
+            border: "1px solid #888",
+            borderRadius: "var(--quiz-radius, 3px)",
+            outline: "none",
+            opacity: locked ? 0.8 : 1
+          }}
+        />
+
+        {!graded && !roundGraded && (
+          <button
+            onClick={() => gradeWritten(i)}
+            disabled={grading}
+            style={{
+              marginTop: 10,
+              padding: "8px 18px",
+              background: SUBMIT_GREEN,
+              color: "white",
+              fontWeight: "bold",
+              border: "none",
+              fontSize: 14,
+              cursor: grading ? "default" : "pointer"
+            }}
+          >
+            {grading ? (
+              <span className="loading-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            ) : (
+              "Submit Answer"
+            )}
+          </button>
+        )}
+
+        {graded && res && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "12px 14px",
+              border: `1px solid ${badge.color}`,
+              borderRadius: "var(--quiz-radius, 3px)",
+              maxWidth: 560
+            }}
+          >
+            <div style={{ fontWeight: "bold", color: badge.color, marginBottom: 6 }}>
+              {badge.text}
+            </div>
+            {res.feedback && (
+              <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>{res.feedback}</div>
+            )}
+            {res.verdict !== "correct" && res.modelAnswer && (
+              <div style={{ fontSize: 14, marginBottom: res.suggestion ? 8 : 0 }}>
+                <span style={{ opacity: 0.6 }}>Model answer: </span>
+                {res.modelAnswer}
+              </div>
+            )}
+            {res.suggestion && (
+              <div style={{ fontSize: 13, opacity: 0.75, fontStyle: "italic" }}>
+                💡 {res.suggestion}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // Read the NDJSON stream the server sends (one question per line, or an
   // {error} line). Calls onItem for each question as it arrives.
   async function readQuestionStream(
@@ -971,8 +1165,13 @@ export default function Home({
       setGenError("Choose grade level in settings to generate questions");
       return;
     }
-    if (amount === 0 && tfAmount === 0) {
+    if (amount === 0 && tfAmount === 0 && writtenAmount === 0) {
       setGenError("Choose a question amount larger than zero to generate");
+      return;
+    }
+    // Written questions come from the transcript; an image-only source has none.
+    if (writtenAmount > 0 && amount === 0 && tfAmount === 0 && mode === "image") {
+      setGenError("Written questions aren't available for image quizzes yet");
       return;
     }
     // Pin this run to the tab it started on, so it keeps filling that tab's quiz
@@ -1004,7 +1203,13 @@ export default function Home({
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ ...payload, count: amount, tfCount: tfAmount, level: describeLevel() }),
+        body: JSON.stringify({
+          ...payload,
+          count: amount,
+          tfCount: tfAmount,
+          writtenCount: writtenAmount,
+          level: describeLevel()
+        }),
         signal: controller.signal
       });
 
@@ -1050,8 +1255,10 @@ export default function Home({
   // concepts (tagged with the next round number, so they render as yellow).
   async function runRechallenge() {
     const justGraded = submittedRounds - 1; // the round we just submitted
+    // Rechallenge rebuilds MC/TF the student missed. Written answers are graded
+    // semantically and don't fit that flow, so they're left out.
     const wrong = questions.filter(
-      (q, i) => (q.round ?? 0) === justGraded && answers[i] !== q.answer
+      (q, i) => (q.round ?? 0) === justGraded && q.type !== "written" && answers[i] !== q.answer
     );
     if (wrong.length === 0) return;
     recordRechallenge(); // stats
@@ -2488,6 +2695,31 @@ export default function Home({
             </div>
           </div>
 
+          {/* Written-answer amount: pick one of 5 / 10 / 15 / 20 */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Written-answer questions</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[0, 5, 10, 15, 20].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setWrittenAmount(n)}
+                  style={{
+                    width: 44,
+                    height: 36,
+                    borderRadius: 3,
+                    border: "2px solid #888",
+                    background: writtenAmount === n ? ACCENT_BG_STRONG : "transparent",
+                    color: writtenAmount === n ? ACCENT_TEXT : "inherit",
+                    fontWeight: writtenAmount === n ? "bold" : "normal",
+                    cursor: "pointer"
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Difficulty slider: Middle School / High School / University */}
           <div>
             <div style={{ fontWeight: "bold", marginBottom: 8 }}>Difficulty</div>
@@ -3714,15 +3946,30 @@ export default function Home({
           const revealed =
             qRound < submittedRounds || (instantFeedback && answers[i] != null);
 
+          // Written questions carry their own AI verdict; everything else is a
+          // straight right/wrong compare.
+          const wRes = q.type === "written" ? written[i] : undefined;
+
           // Title colour: green/red once revealed; otherwise yellow for extension
           // (rechallenge) questions, and the default colour for the original round.
-          const titleColor = revealed
-            ? answers[i] === q.answer
-              ? CORRECT_GREEN
-              : WRONG_RED
-            : qRound >= 1
-              ? RECHALLENGE_YELLOW
-              : undefined;
+          const titleColor =
+            q.type === "written"
+              ? wRes?.status === "done"
+                ? wRes.verdict === "correct"
+                  ? CORRECT_GREEN
+                  : wRes.verdict === "partial"
+                    ? HINT_YELLOW
+                    : WRONG_RED
+                : qRound >= 1
+                  ? RECHALLENGE_YELLOW
+                  : undefined
+              : revealed
+                ? answers[i] === q.answer
+                  ? CORRECT_GREEN
+                  : WRONG_RED
+                : qRound >= 1
+                  ? RECHALLENGE_YELLOW
+                  : undefined;
 
           // Last question of its round? (rounds are contiguous in the array)
           const isLastOfRound =
@@ -3794,9 +4041,11 @@ export default function Home({
                 {i + 1}. {q.question}
               </p>
 
-              {/* Build the answer choices: True/False for a TF question,
-                  otherwise the four labelled options of a MC question. */}
-              {(q.type === "tf"
+              {/* Written questions: a text box + Submit Answer, then the AI's
+                  verdict and feedback. Everything else: the labelled choices. */}
+              {q.type === "written" ? (
+                renderWritten(q, i, qRound)
+              ) : (q.type === "tf"
                 ? (["True", "False"] as const).map((v) => ({ value: v as string, label: v as string }))
                 : (["A", "B", "C", "D"] as const).map((letter) => ({
                     value: letter as string,
@@ -3852,7 +4101,8 @@ export default function Home({
                     <span style={{ color: "#c7c7c7" }}>{choice.label}</span>
                   </label>
                 );
-              })}
+              })
+              }
 
               {/* Hint: the same bouncing-squares animation as quiz loading,
                   then the hint in yellow Inter text under choice D. Sits
