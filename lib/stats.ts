@@ -124,8 +124,10 @@ function prevMilestone(current: number): number {
 
 // Settle the streak against the clock. A banked freeze is spent automatically
 // the moment a decay would happen: the streak is kept and the 48h countdown
-// restarts from that point. Anything still overdue after that decays normally
-// (-1, then -1 per further 24h). Pure — callers persist the result on submit.
+// restarts from that point. The streak then loses 1 every further 48h without
+// a quiz, and `decayAt` always points at the NEXT decay — so the countdown
+// resets to 48h after each drop and counts down toward the next, rather than
+// sticking at "0m". Pure — callers persist the result on submit.
 function settleStreak(
   st: Streak,
   now: number
@@ -142,7 +144,12 @@ function settleStreak(
   }
   let current = st.current;
   if (now >= decayAt) {
-    current = Math.max(0, current - (Math.floor((now - decayAt) / DAY_MS) + 1));
+    // How many full 48h decay windows have elapsed since the deadline (the
+    // deadline itself is the first). Drop that many, and advance the deadline
+    // past them so it counts down toward the next one.
+    const drops = Math.floor((now - decayAt) / DECAY_AFTER_MS) + 1;
+    current = Math.max(0, current - drops);
+    decayAt += drops * DECAY_AFTER_MS;
   }
   return { current, decayAt, freezeUsed, hasFreeze: hasFreeze && !freezeUsed };
 }
