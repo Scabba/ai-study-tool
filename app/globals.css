@@ -9,6 +9,13 @@
   --quiz-gap: 10px;
 }
 
+/* The button-shape customization applies to every button. !important so it
+   wins over the inline borderRadius scattered through the app. Buttons that
+   must stay perfectly circular (icon buttons) opt out with .btn-circle. */
+button:not(.btn-circle) {
+  border-radius: var(--btn-radius) !important;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

@@ -48,7 +48,7 @@ export default function CustomizePage() {
   });
 
   return (
-    <main style={{ padding: 40, maxWidth: 720, margin: "0 auto" }}>
+    <main style={{ padding: 40 }}>
       <div style={{ position: "relative", marginBottom: 28 }}>
         <Link
           href="/"
