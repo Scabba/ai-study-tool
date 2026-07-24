@@ -79,7 +79,16 @@ export default function GamesPage() {
         >
           ←
         </Link>
-        <h1 style={{ textAlign: "center", fontWeight: "bold", fontSize: 40, margin: 0 }}>
+        <h1
+          style={{
+            textAlign: "center",
+            fontWeight: "bold",
+            fontSize: 40,
+            margin: 0,
+            // Keep the title clear of the absolutely-positioned back arrow.
+            padding: "0 56px"
+          }}
+        >
           Games
         </h1>
       </div>
@@ -564,24 +573,25 @@ function Gate({ color }: { color: string }) {
   );
 }
 
-// A low-poly, black-and-white "Athenia" (winged figure), faceted for a
-// polygonal look rather than a flat silhouette.
+// A simplified, black-and-white low-poly winged figure — the Athenia statue
+// (raised V-wings, faceted chevron torso, small head), reduced to a handful of
+// polygons so it reads at small sizes.
 function AthenaIcon({ size = 34 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 48 52" aria-hidden="true">
-      {/* halo */}
-      <ellipse cx="24" cy="5" rx="6.5" ry="2.2" fill="none" stroke="#111" strokeWidth="1.4" />
-      {/* left wing (two facets) */}
-      <polygon points="24,22 5,11 11,29" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      <polygon points="24,22 11,29 24,31" fill="#c9c9c9" stroke="#111" strokeWidth="0.8" />
-      {/* right wing (two facets) */}
-      <polygon points="24,22 43,11 37,29" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      <polygon points="24,22 37,29 24,31" fill="#a9a9a9" stroke="#111" strokeWidth="0.8" />
-      {/* head */}
-      <polygon points="24,8 28,14 20,14" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      {/* robe/body (faceted) */}
-      <polygon points="24,15 32,46 24,44" fill="#ededed" stroke="#111" strokeWidth="1" />
-      <polygon points="24,15 24,44 16,46" fill="#bdbdbd" stroke="#111" strokeWidth="1" />
+    <svg width={size} height={(size * 52) / 64} viewBox="0 0 64 52" aria-hidden="true">
+      {/* LEFT WING — raised and out, two facets */}
+      <polygon points="30,23 4,5 16,25" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      <polygon points="30,23 16,25 29,29" fill="#c9c9c9" stroke="#111" strokeWidth="0.8" />
+      {/* RIGHT WING */}
+      <polygon points="34,23 60,5 48,25" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      <polygon points="34,23 48,25 35,29" fill="#a9a9a9" stroke="#111" strokeWidth="0.8" />
+      {/* HEAD */}
+      <polygon points="32,3 37,10 32,13 27,10" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      {/* TORSO — faceted chevron, split light/dark */}
+      <polygon points="32,13 44,25 32,50" fill="#ededed" stroke="#111" strokeWidth="1" />
+      <polygon points="32,13 20,25 32,50" fill="#bdbdbd" stroke="#111" strokeWidth="1" />
+      {/* central highlight facet */}
+      <polygon points="32,20 37,30 32,44 27,30" fill="#ffffff" stroke="#111" strokeWidth="0.7" />
     </svg>
   );
 }
