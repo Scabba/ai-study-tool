@@ -41,7 +41,7 @@ export default function CustomizePage() {
 
   const swatchCard = (selected: boolean): React.CSSProperties => ({
     border: selected ? `2px solid ${BLUE}` : "1px solid #888",
-    borderRadius: 3,
+    borderRadius: "var(--btn-radius, 3px)",
     background: "transparent",
     color: "inherit",
     cursor: "pointer"
@@ -209,7 +209,7 @@ export default function CustomizePage() {
               width: "100%",
               padding: "10px 0",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               background: "transparent",
               color: "inherit",
               fontSize: 13,
@@ -227,7 +227,7 @@ export default function CustomizePage() {
             position: "sticky",
             top: 20,
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             padding: 20
           }}
         >

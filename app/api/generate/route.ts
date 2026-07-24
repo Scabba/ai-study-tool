@@ -1186,12 +1186,23 @@ export async function POST(req: Request) {
           );
         };
 
+        // Over-request and retry harder so we reliably reach the exact count:
+        // some items come back as duplicates or invalid and get filtered, which
+        // is why "5 requested" could stream only 4. Ask for 2 extra each pass
+        // and allow more passes; empty passes are tolerated (up to 2 in a row)
+        // rather than aborting on the first one.
         let wAttempts = 0;
-        while (sentW < writtenCount && wAttempts < 3) {
+        let emptyStreak = 0;
+        while (sentW < writtenCount && wAttempts < 5) {
           const avoid = [...sentTexts, ...sentWTexts];
-          const batch = await makeWritten(text, writtenCount - sentW, avoid, level);
-          if (batch.length === 0) break;
-          for (const q of batch) sendWritten(q);
+          const need = writtenCount - sentW;
+          const batch = await makeWritten(text, need + 2, avoid, level);
+          if (batch.length === 0) {
+            if (++emptyStreak >= 2) break;
+          } else {
+            emptyStreak = 0;
+            for (const q of batch) sendWritten(q);
+          }
           wAttempts++;
         }
 

@@ -336,7 +336,7 @@ export default function FolderPage() {
               background: "transparent",
               color: "inherit",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: "2px 8px"
             }}
           />
@@ -430,7 +430,7 @@ export default function FolderPage() {
             display: "block",
             margin: "20px auto 0",
             padding: "10px 22px",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             border: "2px solid #c79a34",
             background: "transparent",
             color: wrong.length === 0 ? "#666" : "#d9b45a",
@@ -464,7 +464,7 @@ export default function FolderPage() {
                 gap: 14,
                 padding: "14px 34px 14px 16px", // right room for the ⋯ button
                 border: "1px solid #888",
-                borderRadius: 3
+                borderRadius: "var(--btn-radius, 3px)"
               }}
             >
               <div style={{ minWidth: 0, flex: 1 }}>
@@ -487,7 +487,7 @@ export default function FolderPage() {
                       background: "transparent",
                       color: "inherit",
                       border: "1px solid #888",
-                      borderRadius: 3
+                      borderRadius: "var(--btn-radius, 3px)"
                     }}
                   />
                 ) : (
@@ -625,7 +625,7 @@ export default function FolderPage() {
               background: "var(--background)",
               color: "var(--foreground)",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 24,
               boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
             }}
@@ -638,7 +638,7 @@ export default function FolderPage() {
                 onClick={() => setConfirmDeleteId(null)}
                 style={{
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: "inherit",
                   fontSize: 14,
@@ -652,7 +652,7 @@ export default function FolderPage() {
                 onClick={() => removeQuiz(confirmDeleteId)}
                 style={{
                   border: `1px solid ${RED}`,
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: RED,
                   fontSize: 14,
@@ -690,7 +690,7 @@ export default function FolderPage() {
               background: "var(--background)",
               color: "var(--foreground)",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 24,
               boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
             }}
@@ -704,7 +704,7 @@ export default function FolderPage() {
                 onClick={() => setConfirmDeleteFolder(false)}
                 style={{
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: "inherit",
                   fontSize: 14,
@@ -718,7 +718,7 @@ export default function FolderPage() {
                 onClick={removeFolder}
                 style={{
                   border: `1px solid ${RED}`,
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: RED,
                   fontSize: 14,

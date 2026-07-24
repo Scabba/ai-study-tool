@@ -9,11 +9,12 @@
   --quiz-gap: 10px;
 }
 
-/* The button-shape customization applies to every button. !important so it
-   wins over the inline borderRadius scattered through the app. Buttons that
-   must stay perfectly circular (icon buttons) opt out with .btn-circle. */
-button:not(.btn-circle) {
-  border-radius: var(--btn-radius) !important;
+/* Squared surfaces (buttons, folder chips, quiz cards, panels, inputs) read
+   --btn-radius through their inline styles, so the shape customization reaches
+   all of them. This is only a gentle default for buttons that set no radius of
+   their own; circular icon buttons keep their inline 50% and stay round. */
+button {
+  border-radius: var(--btn-radius);
 }
 
 @theme inline {

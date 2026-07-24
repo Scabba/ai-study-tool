@@ -39,7 +39,7 @@ export default function SupportPage() {
           marginTop: 24,
           padding: 20,
           border: "1px solid #888",
-          borderRadius: 3
+          borderRadius: "var(--btn-radius, 3px)"
         }}
       >
         <p style={{ margin: 0 }}>
@@ -55,7 +55,7 @@ export default function SupportPage() {
           marginTop: 16,
           padding: 20,
           border: "1px solid #888",
-          borderRadius: 3
+          borderRadius: "var(--btn-radius, 3px)"
         }}
       >
         <p style={{ margin: 0 }}>

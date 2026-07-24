@@ -470,7 +470,7 @@ export default function HistoryPage() {
               gap: 6,
               height: 32,
               padding: "0 10px",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               border: "2px solid #888",
               background: "transparent",
               color: "inherit",
@@ -491,7 +491,7 @@ export default function HistoryPage() {
                 minWidth: 160,
                 background: "var(--background)",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
                 zIndex: 40,
                 overflow: "hidden"
@@ -559,7 +559,7 @@ export default function HistoryPage() {
                   width: 150,
                   height: 38,
                   padding: "0 12px",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   border: "2px solid #888",
                   background: "transparent",
                   color: "inherit",
@@ -636,7 +636,7 @@ export default function HistoryPage() {
                   flexShrink: 0,
                   height: 38,
                   padding: "0 14px",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   // Light blue when a dragged quiz hovers it, grey while it's
                   // the folder being reordered.
                   border: `2px solid ${quizDropTarget === f.id ? SORT_HL : "#888"}`,
@@ -682,7 +682,7 @@ export default function HistoryPage() {
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               border: "2px solid #888",
               background: "transparent",
               color: "inherit",
@@ -711,7 +711,7 @@ export default function HistoryPage() {
               justifyContent: "center",
               padding: 0,
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               background: "transparent",
               color: "#cbd5e1",
               cursor: "pointer"
@@ -783,7 +783,7 @@ export default function HistoryPage() {
                   opacity: draggingQuiz === r.id ? 0.4 : 1,
                   padding: "14px 34px 14px 14px", // right room for the ⋯ button
                   border: "1px solid #888",
-                  borderRadius: 3
+                  borderRadius: "var(--btn-radius, 3px)"
                 }}
               >
                 {/* name + meta */}
@@ -807,7 +807,7 @@ export default function HistoryPage() {
                         background: "transparent",
                         color: "inherit",
                         border: "1px solid #888",
-                        borderRadius: 3
+                        borderRadius: "var(--btn-radius, 3px)"
                       }}
                     />
                   ) : (
@@ -858,7 +858,7 @@ export default function HistoryPage() {
                           style={{
                             ...chip,
                             border: "1px solid #888",
-                            borderRadius: 3,
+                            borderRadius: "var(--btn-radius, 3px)",
                             padding: "0 6px",
                             height: 20,
                             background: "transparent",
@@ -914,7 +914,7 @@ export default function HistoryPage() {
                         style={{
                           ...chip,
                           border: "1px solid #888",
-                          borderRadius: 3,
+                          borderRadius: "var(--btn-radius, 3px)",
                           padding: "0 6px",
                           height: 20,
                           background: "transparent",
@@ -1014,7 +1014,7 @@ export default function HistoryPage() {
                               overflowY: "auto",
                               background: "var(--background)",
                               border: "1px solid #888",
-                              borderRadius: 3,
+                              borderRadius: "var(--btn-radius, 3px)",
                               boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
                               zIndex: 30
                             }}
@@ -1122,7 +1122,7 @@ export default function HistoryPage() {
                           onClick={() => setConfirmDeleteId(null)}
                           style={{
                             border: "1px solid #888",
-                            borderRadius: 3,
+                            borderRadius: "var(--btn-radius, 3px)",
                             background: "transparent",
                             color: "inherit",
                             fontSize: 13,
@@ -1136,7 +1136,7 @@ export default function HistoryPage() {
                           onClick={() => removeQuiz(r.id)}
                           style={{
                             border: `1px solid ${RED}`,
-                            borderRadius: 3,
+                            borderRadius: "var(--btn-radius, 3px)",
                             background: "transparent",
                             color: RED,
                             fontSize: 13,
@@ -1167,7 +1167,7 @@ export default function HistoryPage() {
             minWidth: 160,
             background: "var(--background)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 2000,
             overflow: "hidden"
@@ -1232,7 +1232,7 @@ export default function HistoryPage() {
               background: "var(--background)",
               color: "var(--foreground)",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 24,
               boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
             }}
@@ -1249,7 +1249,7 @@ export default function HistoryPage() {
                 onClick={() => setConfirmDeleteFolder(null)}
                 style={{
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: "inherit",
                   fontSize: 14,
@@ -1263,7 +1263,7 @@ export default function HistoryPage() {
                 onClick={() => removeFolder(confirmDeleteFolder.id)}
                 style={{
                   border: `1px solid ${RED}`,
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: RED,
                   fontSize: 14,

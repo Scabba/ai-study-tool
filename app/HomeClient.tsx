@@ -686,6 +686,11 @@ export default function Home({
               // Loading flags are dropped too: those streams didn't survive.
               hints: Object.fromEntries(
                 Object.entries(q.hints ?? {}).filter(([, h]) => h?.status === "done")
+              ),
+              // Keep written grades that finished; drop any mid-grade (that
+              // fetch didn't survive the navigation, same as loading hints).
+              written: Object.fromEntries(
+                Object.entries(q.written ?? {}).filter(([, w]) => w?.status === "done")
               )
             };
           }
@@ -1672,7 +1677,7 @@ export default function Home({
         padding: 0,
         background: "transparent",
         border: "2px solid #888",
-        borderRadius: 3,
+        borderRadius: "var(--btn-radius, 3px)",
         cursor: "pointer",
         color: "inherit"
       }}
@@ -1721,14 +1726,27 @@ export default function Home({
   // The Submit / grade / Rechallenge controls shown at the end of one round.
   const renderRoundControls = (r: number) => {
     const roundTotal = questions.filter((q) => (q.round ?? 0) === r).length;
-    const roundScore = questions.reduce(
-      (t, q, i) => t + ((q.round ?? 0) === r && answers[i] === q.answer ? 1 : 0),
-      0
-    );
+    // Score with partial credit: written questions earn their AI verdict
+    // (correct 1, partial 0.5, incorrect 0); MC/TF earn 1 for a match. This is
+    // what made written answers score 0 — the old compare checked the typed
+    // text against the model answer, which never matches.
+    const roundScore = questions.reduce((t, q, i) => {
+      if ((q.round ?? 0) !== r) return t;
+      if (q.type === "written") {
+        const v = written[i]?.verdict;
+        return t + (v ? WRITTEN_SCORE[v] : 0);
+      }
+      return t + (answers[i] === q.answer ? 1 : 0);
+    }, 0);
     const graded = r < submittedRounds;
     const isActive = r === submittedRounds;
     const pct = roundTotal ? Math.round((roundScore / roundTotal) * 100) : 0;
-    const wrong = roundTotal - roundScore;
+    // Only MC/TF misses feed Rechallenge (written is excluded from it).
+    const wrong = questions.reduce(
+      (t, q, i) =>
+        t + ((q.round ?? 0) === r && q.type !== "written" && answers[i] !== q.answer ? 1 : 0),
+      0
+    );
     const maxRound = questions.reduce((m, q) => Math.max(m, q.round ?? 0), 0);
     const yellow = r >= 1; // extension rounds use the yellow theme
 
@@ -1970,7 +1988,7 @@ export default function Home({
                 background: "var(--background)",
                 color: "var(--foreground)",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 padding: "6px 10px",
                 fontSize: 12,
                 boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
@@ -2137,7 +2155,7 @@ export default function Home({
               padding: "0 16px",
               display: "inline-flex",
               alignItems: "center",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               border: "2px solid #888",
               background: "transparent",
               color: "inherit",
@@ -2187,37 +2205,6 @@ export default function Home({
           </Link>
         )}
 
-        {/* Stats — circular button with an ascending bar-chart icon */}
-        {!isMobile && (
-          <button
-            onClick={() => {
-              setStatsData(loadStats());
-              setShowStats(true);
-            }}
-            aria-label="Stats"
-            title="Stats"
-            style={{
-              width: 40,
-              height: 40,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
-              cursor: "pointer"
-            }}
-          >
-            <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor">
-              {/* three ascending bars: small, medium, large — squared off (rx 1) */}
-              <rect x="3" y="14" width="4.5" height="7" rx="1" />
-              <rect x="9.75" y="9" width="4.5" height="12" rx="1" />
-              <rect x="16.5" y="4" width="4.5" height="17" rx="1" />
-            </svg>
-          </button>
-        )}
-
         {/* Customize — opens the full customization page */}
         {!isMobile && (
           <Link
@@ -2257,6 +2244,37 @@ export default function Home({
             </svg>
           </Link>
         )}
+
+        {/* Stats — circular button with an ascending bar-chart icon */}
+        {!isMobile && (
+          <button
+            onClick={() => {
+              setStatsData(loadStats());
+              setShowStats(true);
+            }}
+            aria-label="Stats"
+            title="Stats"
+            style={{
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "50%",
+              border: "2px solid #888",
+              background: "transparent",
+              color: "inherit",
+              cursor: "pointer"
+            }}
+          >
+            <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor">
+              {/* three ascending bars: small, medium, large — squared off (rx 1) */}
+              <rect x="3" y="14" width="4.5" height="7" rx="1" />
+              <rect x="9.75" y="9" width="4.5" height="12" rx="1" />
+              <rect x="16.5" y="4" width="4.5" height="17" rx="1" />
+            </svg>
+          </button>
+        )}
       </div>
 
 
@@ -2286,7 +2304,7 @@ export default function Home({
               background: "var(--background)",
               color: "var(--foreground)",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 24,
               boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
             }}
@@ -2356,7 +2374,7 @@ export default function Home({
             background: "var(--background)",
             color: "var(--foreground)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             padding: 16,
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 1100 // sit above the mobile profile button
@@ -2566,7 +2584,7 @@ export default function Home({
             background: "var(--background)",
             color: "var(--foreground)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             padding: 20,
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 1000,
@@ -2618,7 +2636,7 @@ export default function Home({
                   justifyContent: "center",
                   background: instantFeedback ? ACCENT_BG : "#000",
                   border: "1px solid #999",
-                  borderRadius: 3
+                  borderRadius: "var(--btn-radius, 3px)"
                 }}
               >
                 {instantFeedback && (
@@ -2656,7 +2674,7 @@ export default function Home({
                   style={{
                     width: 44,
                     height: 36,
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: amount === n ? ACCENT_BG_STRONG : "transparent",
                     color: amount === n ? ACCENT_TEXT : "inherit",
@@ -2681,7 +2699,7 @@ export default function Home({
                   style={{
                     width: 44,
                     height: 36,
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: tfAmount === n ? ACCENT_BG_STRONG : "transparent",
                     color: tfAmount === n ? ACCENT_TEXT : "inherit",
@@ -2706,7 +2724,7 @@ export default function Home({
                   style={{
                     width: 44,
                     height: 36,
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: writtenAmount === n ? ACCENT_BG_STRONG : "transparent",
                     color: writtenAmount === n ? ACCENT_TEXT : "inherit",
@@ -2774,7 +2792,7 @@ export default function Home({
                     minWidth: 40,
                     height: 36,
                     padding: "0 10px",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: gradeYear === g ? ACCENT_BG_STRONG : "transparent",
                     color: gradeYear === g ? ACCENT_TEXT : "inherit",
@@ -2844,7 +2862,7 @@ export default function Home({
             style={{
               height: 40,
               padding: "0 16px",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               border: "2px solid #888",
               background: mode === m ? ACCENT_BG : "transparent",
               color: mode === m ? ACCENT_TEXT : "inherit",
@@ -2877,7 +2895,7 @@ export default function Home({
               gap: 5,
               padding: "0 9px",
               border: "2px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               background: "var(--background)",
               color: "inherit",
               cursor: "pointer",
@@ -2903,7 +2921,7 @@ export default function Home({
                 flexDirection: "column",
                 background: "var(--background)",
                 border: "2px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 overflow: "hidden",
                 zIndex: 0 // behind the button, so the shared edge reads as one line
               }}
@@ -2935,15 +2953,15 @@ export default function Home({
                   carries the divider, so they read as a block the way the tabs
                   above do. */}
               {[
+                { label: "Customize", href: "/customize" },
+                { label: "Quiz History", href: "/history" },
                 {
                   label: "Stats",
                   act: () => {
                     setStatsData(loadStats());
                     setShowStats(true);
                   }
-                },
-                { label: "Quiz History", href: "/history" },
-                { label: "Customize", href: "/customize" }
+                }
               ].map((item, i) => {
                 const style = {
                   padding: "12px 16px",
@@ -3068,7 +3086,7 @@ export default function Home({
           // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
           marginTop: 0,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
-          borderRadius: 3,
+          borderRadius: "var(--btn-radius, 3px)",
           transition: "border-color 0.15s"
         }}
       >
@@ -3094,7 +3112,7 @@ export default function Home({
               padding: "6px 12px",
               background: "transparent",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               cursor: "pointer",
               color: "inherit",
               fontSize: 14
@@ -3161,7 +3179,7 @@ export default function Home({
               justifyContent: "center",
               pointerEvents: "none", // let the drop pass through to the box
               background: ACCENT_BG,
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               color: ACCENT_TEXT,
               fontSize: 16,
               fontWeight: 500
@@ -3250,7 +3268,7 @@ export default function Home({
                     maxWidth: 160,
                     maxHeight: 160,
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     objectFit: "contain",
                     cursor: "pointer" // click to view fullscreen
                   }}
@@ -3321,7 +3339,7 @@ export default function Home({
                 height: 96,
                 background: "transparent",
                 border: "2px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 cursor: loading ? "default" : "pointer",
                 color: "inherit"
               }}
@@ -3460,7 +3478,7 @@ export default function Home({
                 key={i}
                 style={{
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   padding: 10
                 }}
               >
@@ -3583,7 +3601,7 @@ export default function Home({
                     height: 40, // fits the 44px reserved slot above
                     objectFit: "cover",
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     background: "#000"
                   }}
                 />
@@ -3697,7 +3715,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3741,7 +3759,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: recording ? "2px solid #e0776b" : "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3807,7 +3825,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: showYoutube ? "2px solid #cbd5e1" : "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3846,7 +3864,7 @@ export default function Home({
                   width: 260,
                   height: 40,
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   padding: "0 12px",
                   fontSize: 15,
                   background: "transparent",
@@ -3864,7 +3882,7 @@ export default function Home({
                     height: 16,
                     width: "100%",
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     background: "transparent",
                     overflow: "hidden"
                   }}
@@ -3984,7 +4002,7 @@ export default function Home({
               style={{
                 position: "relative",
                 padding: 12,
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 // A hint slots INTO the existing gap between choice D and the next
                 // question rather than adding to it: giving up this card's bottom
                 // padding/margin buys back exactly the room the hint takes, so the

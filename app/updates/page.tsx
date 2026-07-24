@@ -122,7 +122,7 @@ export default function UpdatesPage() {
             marginTop: 24,
             padding: 20,
             border: "1px solid #888",
-            borderRadius: 3
+            borderRadius: "var(--btn-radius, 3px)"
           }}
         >
           <h2
@@ -144,7 +144,7 @@ export default function UpdatesPage() {
                   letterSpacing: 0.5,
                   color: "#cbd5e1",
                   background: "rgba(148, 163, 184, 0.18)",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   padding: "2px 8px"
                 }}
               >
