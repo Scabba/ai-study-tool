@@ -35,9 +35,9 @@ export type PaletteId = (typeof PALETTES)[number]["id"];
 // Button corner style, applied app-wide via the --btn-radius CSS variable.
 // Buttons that opt in read `var(--btn-radius)` instead of a hard-coded 3.
 export const BUTTON_SHAPES = [
+  { id: "square", name: "Square", radius: "0px" },
   { id: "sharp", name: "Sharp", radius: "3px" },
-  { id: "rounded", name: "Rounded", radius: "10px" },
-  { id: "pill", name: "Pill", radius: "999px" }
+  { id: "rounded", name: "Rounded", radius: "10px" }
 ] as const;
 export type ButtonShapeId = (typeof BUTTON_SHAPES)[number]["id"];
 

@@ -778,31 +778,56 @@ export default function Home({
       try {
         const items = JSON.parse(raw) as {
           question: string;
+          type?: "mc" | "tf" | "written";
           options?: { A: string; B: string; C: string; D: string };
           correct: string;
           chosen: string;
+          verdict?: WrittenVerdict;
+          feedback?: string;
         }[];
-        const qs: Question[] = items.map((it) =>
-          it.options
-            ? {
-                question: it.question,
-                options: it.options,
-                answer: it.correct,
-                difficulty: "medium",
-                round: 0
-              }
-            : {
-                type: "tf",
-                question: it.question,
-                answer: it.correct === "True" ? "True" : "False",
-                difficulty: "medium",
-                round: 0
-              }
-        );
+        // Older saved quizzes have no `type`: infer it (options -> MC, else TF)
+        // for back-compat. Written items always carry type + verdict.
+        const qs: Question[] = items.map((it) => {
+          if (it.type === "written") {
+            return {
+              type: "written",
+              question: it.question,
+              answer: it.correct, // the model answer
+              difficulty: "medium",
+              round: 0
+            } satisfies WrittenQuestion;
+          }
+          if (it.options && it.type !== "tf") {
+            return {
+              question: it.question,
+              options: it.options,
+              answer: it.correct,
+              difficulty: "medium",
+              round: 0
+            } satisfies MCQuestion;
+          }
+          return {
+            type: "tf",
+            question: it.question,
+            answer: it.correct === "True" ? "True" : "False",
+            difficulty: "medium",
+            round: 0
+          } satisfies TFQuestion;
+        });
         if (qs.length) {
           const chosen: Record<number, string> = {};
+          const writtenReview: Record<number, WrittenResult> = {};
           items.forEach((it, i) => {
             if (it.chosen) chosen[i] = it.chosen;
+            // Replay the written grade so review shows the verdict + feedback.
+            if (it.type === "written" && it.verdict) {
+              writtenReview[i] = {
+                status: "done",
+                verdict: it.verdict,
+                feedback: it.feedback,
+                modelAnswer: it.correct
+              };
+            }
           });
           reviewScrollRef.current = true; // jump to the quiz once it renders
           // Lands on the Text tab — that's the tab the app opens on.
@@ -810,6 +835,7 @@ export default function Home({
             ...EMPTY_QUIZ,
             questions: qs,
             answers: chosen,
+            written: writtenReview,
             submittedRounds: 1 // round 0 is already graded → reveal right/wrong
           });
         }
@@ -868,11 +894,13 @@ export default function Home({
         .filter(({ q }) => (q.round ?? 0) === 0)
         .map(({ q, i }) => ({
           question: q.question,
+          type: q.type === "tf" ? ("tf" as const) : q.type === "written" ? ("written" as const) : ("mc" as const),
           options: "options" in q ? q.options : undefined,
           correct: q.answer,
           chosen: answers[i] ?? "",
-          // A written question carries its AI verdict so history can show it.
-          verdict: q.type === "written" ? written[i]?.verdict : undefined
+          // A written question carries its AI grade so history can replay it.
+          verdict: q.type === "written" ? written[i]?.verdict : undefined,
+          feedback: q.type === "written" ? written[i]?.feedback : undefined
         }));
       // Score with partial credit: written questions are worth their verdict
       // (correct 1, partial 0.5, incorrect 0); MC/TF are 1 for a match.

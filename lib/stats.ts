@@ -1,12 +1,16 @@
 // Lightweight usage stats. Kept in localStorage always, and (when signed in)
 // mirrored to the user's account so they follow them across devices.
 
-// One answered question inside a quiz (kept so folders can rechallenge misses).
+// One answered question inside a quiz (kept so folders can rechallenge misses,
+// and so Quiz History can replay it).
 export type QuizItem = {
   question: string;
-  options?: { A: string; B: string; C: string; D: string }; // absent for True/False
-  correct: string; // correct answer (letter, or "True"/"False")
-  chosen: string; // what the user picked
+  type?: "mc" | "tf" | "written"; // absent = multiple-choice (back-compat)
+  options?: { A: string; B: string; C: string; D: string }; // absent for TF/written
+  correct: string; // MC letter, "True"/"False", or (written) the model answer
+  chosen: string; // what the user picked / typed
+  verdict?: "correct" | "partial" | "incorrect"; // written only: the AI grade
+  feedback?: string; // written only: the AI's short explanation
 };
 
 // One completed quiz, for the Quiz History page.
@@ -226,12 +230,21 @@ function sanitizeItems(v: unknown): QuizItem[] {
     .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
     .map((it) => ({
       question: typeof it.question === "string" ? it.question : "",
+      type:
+        it.type === "tf" || it.type === "written" || it.type === "mc"
+          ? (it.type as "mc" | "tf" | "written")
+          : undefined,
       options:
         it.options && typeof it.options === "object"
           ? (it.options as { A: string; B: string; C: string; D: string })
           : undefined,
       correct: typeof it.correct === "string" ? it.correct : "",
-      chosen: typeof it.chosen === "string" ? it.chosen : ""
+      chosen: typeof it.chosen === "string" ? it.chosen : "",
+      verdict:
+        it.verdict === "correct" || it.verdict === "partial" || it.verdict === "incorrect"
+          ? (it.verdict as "correct" | "partial" | "incorrect")
+          : undefined,
+      feedback: typeof it.feedback === "string" ? it.feedback : undefined
     }));
 }
 
