@@ -2135,7 +2135,8 @@ export default function Home({
           right: 63, // just left of the 40px "?" at right:15
           display: "flex",
           gap: 8,
-          zIndex: 1000
+          zIndex: 1000,
+          background: "var(--background)" // solid, so scrolling questions don't bleed through (matches the tab bar)
         }}
       >
         {/* Upgrade indicator: a thick muted-green up arrow beside the profile
