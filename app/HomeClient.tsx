@@ -2921,7 +2921,7 @@ export default function Home({
             textDecoration: "none"
           }}
         >
-          Game
+          Games
         </Link>
       </div>
       )}
@@ -3011,7 +3011,7 @@ export default function Home({
                   cursor: "pointer"
                 }}
               >
-                Game
+                Games
               </Link>
               {/* Stats / Quiz History / Customize are one group: only the first
                   carries the divider, so they read as a block the way the tabs

@@ -103,7 +103,7 @@ export default function GamesPage() {
 
 // --- True/False "Gate Runner" ------------------------------------------------
 
-const GATE_MS = 5000; // seconds per gate (spawn -> reach the angels)
+const GATE_MS = 3000; // ms per gate (spawn -> reach the Athenias)
 const START_ANGELS = 3;
 const REWARD = 1; // right gate
 const PENALTY = -2; // wrong gate
@@ -363,7 +363,15 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
             cursor: phase === "loading" ? "default" : "pointer"
           }}
         >
-          {phase === "loading" ? "Building gates…" : "Start"}
+          {phase === "loading" ? (
+            <span className="loading-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+          ) : (
+            "Start"
+          )}
         </button>
       </div>
     );
@@ -376,11 +384,11 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
       <div style={{ textAlign: "center", paddingTop: 20 }}>
         <div style={{ fontSize: 48 }}>{survived ? "😇" : "💀"}</div>
         <h2 style={{ fontSize: 26, fontWeight: "bold", margin: "8px 0" }}>
-          {survived ? "You made it!" : "Your angels fell"}
+          {survived ? "You made it!" : "Your Athenias fell"}
         </h2>
         <p style={{ opacity: 0.75 }}>
           {survived
-            ? `You finished with ${angels} angel${angels === 1 ? "" : "s"}.`
+            ? `You finished with ${angels} Athenia${angels === 1 ? "" : "s"}.`
             : "Try again with fresh notes."}
         </p>
         <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 18 }}>
@@ -420,91 +428,170 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
 
   // --- Playing --------------------------------------------------------------
   const q = questions[index];
-  const flashColor = flash === "right" ? "#57b98a" : flash === "wrong" ? "#e0776b" : "transparent";
+  const flashGlow =
+    flash === "right"
+      ? "0 0 0 2px #57b98a, 0 0 26px rgba(87,185,138,0.55)"
+      : flash === "wrong"
+        ? "0 0 0 2px #e0776b, 0 0 26px rgba(224,119,107,0.55)"
+        : "none";
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <span style={{ fontWeight: "bold" }}>
-          👼 × {angels}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: "bold", fontSize: 17 }}>
+          <AthenaIcon size={22} />
+          <span>Athenias × {angels}</span>
         </span>
-        <span style={{ opacity: 0.6 }}>
+        <span style={{ opacity: 0.55, fontVariantNumeric: "tabular-nums" }}>
           {index + 1} / {questions.length}
         </span>
       </div>
 
-      {/* Statement above the gate */}
+      {/* Statement above the gate — FIXED height so it never reflows the field */}
       <div
         style={{
+          height: 60,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
           textAlign: "center",
           fontWeight: "bold",
           fontSize: 18,
-          minHeight: 52,
-          padding: "0 10px",
-          marginBottom: 8
+          lineHeight: 1.25,
+          padding: "0 12px",
+          marginBottom: 10,
+          overflow: "hidden"
         }}
       >
         {q?.statement}
       </div>
 
-      {/* Playfield */}
+      {/* Playfield — fixed size; a deep panel with a lane divider and a floor */}
       <div
         style={{
           position: "relative",
-          height: 380,
-          border: `2px solid ${flashColor === "transparent" ? "#888" : flashColor}`,
-          borderRadius: "var(--btn-radius, 3px)",
+          height: 400,
+          borderRadius: 12,
           overflow: "hidden",
-          transition: "border-color 0.15s"
+          border: "1px solid #2a2f3a",
+          background: "linear-gradient(180deg, #0b0e14 0%, #131824 100%)",
+          boxShadow: flashGlow,
+          transition: "box-shadow 0.15s"
         }}
       >
-        {/* The two gates, descending together */}
+        {/* faint lane tints + centre divider */}
+        <div style={{ position: "absolute", inset: 0, display: "flex", pointerEvents: "none" }}>
+          <div style={{ flex: 1, background: hexToRgba(colors.t, 0.05) }} />
+          <div style={{ flex: 1, background: hexToRgba(colors.f, 0.05) }} />
+        </div>
         <div
           style={{
             position: "absolute",
-            top: `calc(${gateY * 100}% - 44px)`,
+            top: 0,
+            bottom: 0,
+            left: "50%",
+            width: 2,
+            marginLeft: -1,
+            background: "rgba(255,255,255,0.06)",
+            pointerEvents: "none"
+          }}
+        />
+
+        {/* The two gates, descending together — rounded, glowing bars */}
+        <div
+          style={{
+            position: "absolute",
+            top: `calc(${gateY * 100}% - 52px)`,
             left: 0,
             right: 0,
-            height: 44,
-            display: "flex"
+            height: 52,
+            display: "flex",
+            gap: 8,
+            padding: "0 8px",
+            boxSizing: "border-box"
           }}
         >
-          <div style={{ flex: 1, background: colors.t, border: "2px solid rgba(255,255,255,0.5)", boxSizing: "border-box" }} />
-          <div style={{ flex: 1, background: colors.f, border: "2px solid rgba(255,255,255,0.5)", boxSizing: "border-box" }} />
+          <Gate color={colors.t} />
+          <Gate color={colors.f} />
         </div>
 
-        {/* Angels at the bottom, in their lane */}
+        {/* Athenias — stacked vertically at the bottom of their lane */}
         <div
           style={{
             position: "absolute",
-            bottom: 12,
+            bottom: 14,
             left: lane === 0 ? "25%" : "75%",
             transform: "translateX(-50%)",
-            transition: "left 0.12s ease-out",
-            fontSize: 26,
-            whiteSpace: "nowrap"
+            transition: "left 0.11s ease-out",
+            display: "flex",
+            flexDirection: "column-reverse",
+            alignItems: "center"
           }}
         >
-          {"👼".repeat(Math.min(angels, 5))}
+          {Array.from({ length: Math.min(angels, 6) }).map((_, i) => (
+            <div key={i} style={{ marginTop: i === 0 ? 0 : -14 }}>
+              <AthenaIcon size={38} />
+            </div>
+          ))}
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10 }}>
-        <button
-          onMouseDown={() => setLane(0)}
-          style={laneBtn}
-        >
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12 }}>
+        <button onMouseDown={() => setLane(0)} style={laneBtn}>
           ◀ {leftKey.toUpperCase()}
         </button>
-        <button
-          onMouseDown={() => setLane(1)}
-          style={laneBtn}
-        >
+        <button onMouseDown={() => setLane(1)} style={laneBtn}>
           {rightKey.toUpperCase()} ▶
         </button>
       </div>
     </div>
   );
+}
+
+// A single glowing gate bar.
+function Gate({ color }: { color: string }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        borderRadius: 8,
+        background: `linear-gradient(180deg, ${color} 0%, ${hexToRgba(color, 0.75)} 100%)`,
+        border: "2px solid rgba(255,255,255,0.65)",
+        boxShadow: `0 0 18px ${hexToRgba(color, 0.6)}, inset 0 0 12px rgba(255,255,255,0.25)`,
+        boxSizing: "border-box"
+      }}
+    />
+  );
+}
+
+// A low-poly, black-and-white "Athenia" (winged figure), faceted for a
+// polygonal look rather than a flat silhouette.
+function AthenaIcon({ size = 34 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 52" aria-hidden="true">
+      {/* halo */}
+      <ellipse cx="24" cy="5" rx="6.5" ry="2.2" fill="none" stroke="#111" strokeWidth="1.4" />
+      {/* left wing (two facets) */}
+      <polygon points="24,22 5,11 11,29" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      <polygon points="24,22 11,29 24,31" fill="#c9c9c9" stroke="#111" strokeWidth="0.8" />
+      {/* right wing (two facets) */}
+      <polygon points="24,22 43,11 37,29" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      <polygon points="24,22 37,29 24,31" fill="#a9a9a9" stroke="#111" strokeWidth="0.8" />
+      {/* head */}
+      <polygon points="24,8 28,14 20,14" fill="#ffffff" stroke="#111" strokeWidth="1" />
+      {/* robe/body (faceted) */}
+      <polygon points="24,15 32,46 24,44" fill="#ededed" stroke="#111" strokeWidth="1" />
+      <polygon points="24,15 24,44 16,46" fill="#bdbdbd" stroke="#111" strokeWidth="1" />
+    </svg>
+  );
+}
+
+// #rgb / #rrggbb -> rgba() with the given alpha.
+function hexToRgba(hex: string, alpha: number): string {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
 const laneBtn: React.CSSProperties = {
