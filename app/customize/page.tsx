@@ -202,6 +202,38 @@ export default function CustomizePage() {
             </div>
           </Section>
 
+          <Section title="Gate colors (True/False game)">
+            <div style={{ display: "flex", gap: 20 }}>
+              {(
+                [
+                  ["gateTrue", "True gate"],
+                  ["gateFalse", "False gate"]
+                ] as const
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+                >
+                  <input
+                    type="color"
+                    value={theme[key]}
+                    onChange={(e) => pick({ [key]: e.target.value })}
+                    style={{
+                      width: 40,
+                      height: 32,
+                      padding: 0,
+                      border: "1px solid #888",
+                      borderRadius: "var(--btn-radius, 3px)",
+                      background: "transparent",
+                      cursor: "pointer"
+                    }}
+                  />
+                  <span style={{ fontSize: 14 }}>{label}</span>
+                </label>
+              ))}
+            </div>
+          </Section>
+
           <button
             onClick={() => pick({ ...DEFAULT_THEME })}
             style={{

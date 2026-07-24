@@ -2904,6 +2904,25 @@ export default function Home({
             {m}
           </button>
         ))}
+        {/* Game is a separate page, not a quiz mode — sits at the end of the row */}
+        <Link
+          href="/games"
+          style={{
+            height: 40,
+            padding: "0 16px",
+            display: "inline-flex",
+            alignItems: "center",
+            borderRadius: "var(--btn-radius, 3px)",
+            border: "2px solid #888",
+            background: "transparent",
+            color: "inherit",
+            fontWeight: "bold",
+            fontSize: 16,
+            textDecoration: "none"
+          }}
+        >
+          Game
+        </Link>
       </div>
       )}
 
@@ -2978,6 +2997,22 @@ export default function Home({
                   {m}
                 </button>
               ))}
+              <Link
+                href="/games"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  border: "none",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Game
+              </Link>
               {/* Stats / Quiz History / Customize are one group: only the first
                   carries the divider, so they read as a block the way the tabs
                   above do. */}

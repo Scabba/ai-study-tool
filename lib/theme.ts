@@ -8,7 +8,18 @@ export type ThemeChoice = {
   palette: PaletteId;
   buttonShape: ButtonShapeId;
   quizStyle: QuizStyleId;
+  gateTrue: string; // True/False game: the "true" gate colour
+  gateFalse: string; // ...and the "false" gate colour
 };
+
+// Defaults for the True/False game gates — Athenia's light blue / muted red.
+export const DEFAULT_GATE_TRUE = "#7dd3fc";
+export const DEFAULT_GATE_FALSE = "#e0776b";
+
+// Only accept a #rrggbb / #rgb hex so a bad stored value can't inject CSS.
+function safeHex(v: unknown, fallback: string): string {
+  return typeof v === "string" && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v) ? v : fallback;
+}
 
 export const FONTS = [
   // All three are already bundled by app/layout.tsx as CSS variables — no new
@@ -54,7 +65,9 @@ export const DEFAULT_THEME: ThemeChoice = {
   font: "inter",
   palette: "midnight",
   buttonShape: "sharp",
-  quizStyle: "boxed"
+  quizStyle: "boxed",
+  gateTrue: DEFAULT_GATE_TRUE,
+  gateFalse: DEFAULT_GATE_FALSE
 };
 
 const KEY = "atheniaTheme";
@@ -72,7 +85,9 @@ export function loadTheme(): ThemeChoice {
       font: pick(FONTS, t.font, DEFAULT_THEME.font),
       palette: pick(PALETTES, t.palette, DEFAULT_THEME.palette),
       buttonShape: pick(BUTTON_SHAPES, t.buttonShape, DEFAULT_THEME.buttonShape),
-      quizStyle: pick(QUIZ_STYLES, t.quizStyle, DEFAULT_THEME.quizStyle)
+      quizStyle: pick(QUIZ_STYLES, t.quizStyle, DEFAULT_THEME.quizStyle),
+      gateTrue: safeHex(t.gateTrue, DEFAULT_GATE_TRUE),
+      gateFalse: safeHex(t.gateFalse, DEFAULT_GATE_FALSE)
     };
   } catch {
     return { ...DEFAULT_THEME };
@@ -110,4 +125,6 @@ export function applyTheme(t: ThemeChoice) {
   root.style.setProperty("--btn-radius", shape.radius);
   root.style.setProperty("--quiz-radius", quiz.radius);
   root.style.setProperty("--quiz-gap", quiz.gap);
+  root.style.setProperty("--gate-true", safeHex(t.gateTrue, DEFAULT_GATE_TRUE));
+  root.style.setProperty("--gate-false", safeHex(t.gateFalse, DEFAULT_GATE_FALSE));
 }
