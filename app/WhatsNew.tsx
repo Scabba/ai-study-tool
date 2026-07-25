@@ -7,7 +7,7 @@ import { useState, useEffect } from "react";
 const APP_VERSION = "0.7";
 
 const WHATS_NEW = [
-  "👾 2 minigames on a brand new 'Games' page",
+  "👾 Minigame on a brand new 'Games' page",
   "🛠️ Reworked Quiz History page",
   "🎨 Customizable buttons, quiz layout, and quiz folder colors",
   "📝 Optional written answers for generated questions",

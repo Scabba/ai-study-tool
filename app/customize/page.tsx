@@ -7,12 +7,20 @@ import {
   PALETTES,
   BUTTON_SHAPES,
   QUIZ_STYLES,
+  QUESTION_FONTS,
+  BUTTONS,
   DEFAULT_THEME,
   applyTheme,
+  btnColors,
+  boxMetrics,
   loadTheme,
   saveTheme,
+  type ButtonId,
   type ThemeChoice
 } from "@/lib/theme";
+
+// The dropdown groups, in the order BUTTONS declares them.
+const BUTTON_GROUPS = [...new Set(BUTTONS.map((b) => b.group))];
 
 const BLUE = "#7dd3fc";
 
@@ -26,9 +34,16 @@ export default function CustomizePage() {
     typeof window === "undefined" ? DEFAULT_THEME : loadTheme()
   );
 
+  // Which button the "one by one" colour picker is currently pointed at. Purely
+  // a UI cursor — nothing about it is saved with the theme.
+  const [pickedButton, setPickedButton] = useState<ButtonId>("text");
+
   useEffect(() => {
     document.title = "Customize — Athenia";
   }, []);
+
+  const paletteAccent = PALETTES.find((p) => p.id === theme.palette) ?? PALETTES[0];
+  const pickedName = BUTTONS.find((b) => b.id === pickedButton)?.name ?? "";
 
   function pick(patch: Partial<ThemeChoice>) {
     setTheme((prev) => {
@@ -202,6 +217,313 @@ export default function CustomizePage() {
             </div>
           </Section>
 
+          <Section title="Button colors">
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {(
+                [
+                  ["default", "Default"],
+                  ["all", "All the same"],
+                  ["individual", "One by one"]
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => pick({ buttonColorMode: id })}
+                  style={{
+                    ...swatchCard(theme.buttonColorMode === id),
+                    flex: 1,
+                    padding: "12px 0",
+                    fontSize: 14
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* One colour for every button: either the palette's own accent or
+                a colour picked here. */}
+            {theme.buttonColorMode === "all" && (
+              <>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(
+                    [
+                      [true, `Match ${paletteAccent.name}`],
+                      [false, "Custom color"]
+                    ] as const
+                  ).map(([usePalette, label]) => (
+                    <button
+                      key={String(usePalette)}
+                      onClick={() => pick({ buttonAllPalette: usePalette })}
+                      style={{
+                        ...swatchCard(theme.buttonAllPalette === usePalette),
+                        flex: 1,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        padding: "11px 0",
+                        fontSize: 13
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: 3,
+                          border: "1px solid #888",
+                          background: usePalette ? paletteAccent.accent : theme.buttonAllColor
+                        }}
+                      />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {!theme.buttonAllPalette && (
+                  <ColorField
+                    label="Button color"
+                    value={theme.buttonAllColor}
+                    onChange={(v) => pick({ buttonAllColor: v })}
+                  />
+                )}
+              </>
+            )}
+
+            {/* Per-button: pick a button from the dropdown, then a colour. */}
+            {theme.buttonColorMode === "individual" && (
+              <>
+                <select
+                  value={pickedButton}
+                  onChange={(e) => setPickedButton(e.target.value as ButtonId)}
+                  aria-label="Button to customize"
+                  style={{
+                    width: "100%",
+                    padding: "10px 8px",
+                    border: "1px solid #888",
+                    borderRadius: "var(--btn-radius, 3px)",
+                    background: "var(--background)",
+                    color: "inherit",
+                    fontSize: 14,
+                    cursor: "pointer"
+                  }}
+                >
+                  {BUTTON_GROUPS.map((group) => (
+                    <optgroup key={group} label={group}>
+                      {BUTTONS.filter((b) => b.group === group).map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                          {theme.buttonColors[b.id] ? " •" : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+
+                <ColorField
+                  label={`${pickedName} color`}
+                  value={theme.buttonColors[pickedButton] ?? paletteAccent.accent}
+                  onChange={(v) =>
+                    pick({ buttonColors: { ...theme.buttonColors, [pickedButton]: v } })
+                  }
+                />
+
+                {theme.buttonColors[pickedButton] && (
+                  <button
+                    onClick={() => {
+                      const next = { ...theme.buttonColors };
+                      delete next[pickedButton];
+                      pick({ buttonColors: next });
+                    }}
+                    style={{
+                      marginTop: 10,
+                      padding: "7px 14px",
+                      border: "1px solid #888",
+                      borderRadius: "var(--btn-radius, 3px)",
+                      background: "transparent",
+                      color: "inherit",
+                      fontSize: 13,
+                      cursor: "pointer",
+                      opacity: 0.8
+                    }}
+                  >
+                    Reset {pickedName}
+                  </button>
+                )}
+              </>
+            )}
+          </Section>
+
+          <Section title="Question font">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+              {QUESTION_FONTS.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => pick({ questionFont: f.id })}
+                  style={{
+                    ...swatchCard(theme.questionFont === f.id),
+                    padding: "12px 0",
+                    fontSize: 14,
+                    fontFamily: f.css || "inherit"
+                  }}
+                >
+                  {f.name}
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section title="Question box">
+            <div style={{ display: "flex", gap: 8, marginBottom: theme.questionBox ? 14 : 0 }}>
+              {[
+                ["Off", false],
+                ["On", true]
+              ].map(([label, on]) => (
+                <button
+                  key={String(label)}
+                  onClick={() => pick({ questionBox: on as boolean })}
+                  style={{
+                    ...swatchCard(theme.questionBox === on),
+                    flex: 1,
+                    padding: "12px 0",
+                    fontSize: 14
+                  }}
+                >
+                  {label as string}
+                </button>
+              ))}
+            </div>
+
+            {/* Size and fill only mean anything once there's a box to size/fill. */}
+            {theme.questionBox && (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    fontSize: 13,
+                    opacity: 0.6,
+                    marginBottom: 6
+                  }}
+                >
+                  <span>Box size</span>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {boxMetrics(theme.questionBoxSize).width}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={theme.questionBoxSize}
+                  onChange={(e) => pick({ questionBoxSize: Number(e.target.value) })}
+                  aria-label="Question box size"
+                  style={{ width: "100%", accentColor: BLUE, cursor: "pointer" }}
+                />
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 10,
+                    marginTop: 14,
+                    cursor: "pointer"
+                  }}
+                >
+                  <input
+                    type="color"
+                    value={theme.questionBoxFill}
+                    onChange={(e) => pick({ questionBoxFill: e.target.value })}
+                    style={{
+                      width: 40,
+                      height: 32,
+                      padding: 0,
+                      border: "1px solid #888",
+                      borderRadius: "var(--btn-radius, 3px)",
+                      background: "transparent",
+                      cursor: "pointer"
+                    }}
+                  />
+                  <span style={{ fontSize: 14 }}>Inside the box</span>
+                </label>
+              </>
+            )}
+          </Section>
+
+          <Section title="Question layout">
+            <div style={{ display: "flex", gap: 8 }}>
+              {[1, 2, 3].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => pick({ questionColumns: n })}
+                  style={{
+                    ...swatchCard(theme.questionColumns === n),
+                    flex: 1,
+                    padding: "12px 0 10px",
+                    fontSize: 14
+                  }}
+                >
+                  {/* n columns of stacked rows, previewing the flow */}
+                  <span
+                    style={{
+                      display: "flex",
+                      gap: 4,
+                      width: 46,
+                      height: 22,
+                      margin: "0 auto 8px"
+                    }}
+                  >
+                    {Array.from({ length: n }).map((_, c) => (
+                      <span
+                        key={c}
+                        style={{
+                          flex: 1,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 3
+                        }}
+                      >
+                        <span style={{ flex: 1, background: "#888", borderRadius: 1 }} />
+                        <span style={{ flex: 1, background: "#888", borderRadius: 1 }} />
+                      </span>
+                    ))}
+                  </span>
+                  {n === 1 ? "1 column" : `${n} columns`}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.5, marginTop: 8 }}>
+              Wide screens only — phones always use one column.
+            </div>
+          </Section>
+
+          <Section title="Folder color (Quiz History)">
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <ColorField
+                label="Folder icon"
+                value={theme.folderColor || "#ededed"}
+                onChange={(v) => pick({ folderColor: v })}
+              />
+              {theme.folderColor && (
+                <button
+                  onClick={() => pick({ folderColor: "" })}
+                  style={{
+                    marginTop: 12,
+                    padding: "7px 14px",
+                    border: "1px solid #888",
+                    borderRadius: "var(--btn-radius, 3px)",
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 13,
+                    cursor: "pointer",
+                    opacity: 0.8
+                  }}
+                >
+                  Default
+                </button>
+              )}
+            </div>
+          </Section>
+
           <Section title="Gate colors (True/False game)">
             <div style={{ display: "flex", gap: 20 }}>
               {(
@@ -270,8 +592,7 @@ export default function CustomizePage() {
             <span
               style={{
                 padding: "10px 22px",
-                background: BLUE,
-                color: "#0f172a",
+                ...btnColors("generate", { width: 0, bg: BLUE, text: "#0f172a" }),
                 fontWeight: "bold",
                 fontSize: 15,
                 borderRadius: "var(--btn-radius, 3px)"
@@ -282,11 +603,9 @@ export default function CustomizePage() {
             <span
               style={{
                 padding: "10px 20px",
-                background: "transparent",
-                color: "#e9a05c",
+                ...btnColors("rechallenge", { text: "#e9a05c", border: "#a9773f" }),
                 fontWeight: "bold",
                 fontSize: 15,
-                border: "2px solid #a9773f",
                 borderRadius: "var(--btn-radius, 3px)"
               }}
             >
@@ -294,8 +613,26 @@ export default function CustomizePage() {
             </span>
           </div>
 
-          {/* Mock quiz */}
-          <div style={{ fontWeight: "bold", fontSize: 16, marginBottom: 14 }}>
+          {/* Mock quiz — reads the same box vars the real questions do, so the
+              border, fill and padding preview live. Width is capped by the panel
+              rather than by --qbox-width; the slider shows the real number. */}
+          <div
+            style={{
+              padding: "var(--qbox-pad, 12px)",
+              border: "var(--qbox-border, none)",
+              background: "var(--qbox-fill, transparent)",
+              borderRadius: "var(--btn-radius, 3px)",
+              fontFamily: "var(--q-font, inherit)",
+              margin: "0 -12px"
+            }}
+          >
+          <div
+            style={{
+              fontWeight: "bold",
+              fontSize: 16,
+              marginBottom: 14
+            }}
+          >
             1. What powers photosynthesis?
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--quiz-gap, 10px)" }}>
@@ -325,9 +662,42 @@ export default function CustomizePage() {
               </span>
             ))}
           </div>
+          </div>
         </div>
       </div>
     </main>
+  );
+}
+
+function ColorField({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label
+      style={{ display: "inline-flex", alignItems: "center", gap: 10, marginTop: 12, cursor: "pointer" }}
+    >
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: 40,
+          height: 32,
+          padding: 0,
+          border: "1px solid #888",
+          borderRadius: "var(--btn-radius, 3px)",
+          background: "transparent",
+          cursor: "pointer"
+        }}
+      />
+      <span style={{ fontSize: 14 }}>{label}</span>
+    </label>
   );
 }
 

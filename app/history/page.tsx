@@ -99,8 +99,9 @@ function FolderIcon({ size = 18 }: { size?: number }) {
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      style={{ flexShrink: 0 }}
+      style={{ flexShrink: 0, stroke: "var(--folder-color, currentColor)" }}
     >
+      {/* Customize -> Folder color. Unset, it inherits like it always did. */}
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
     </svg>
   );

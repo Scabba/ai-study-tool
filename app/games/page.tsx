@@ -391,7 +391,7 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
     const survived = angels > 0;
     return (
       <div style={{ textAlign: "center", paddingTop: 20 }}>
-        <div style={{ fontSize: 48 }}>{survived ? "😇" : "💀"}</div>
+        {survived ? <VictoryMark /> : <div style={{ fontSize: 48 }}>💀</div>}
         <h2 style={{ fontSize: 26, fontWeight: "bold", margin: "8px 0" }}>
           {survived ? "You made it!" : "Your Athenias fell"}
         </h2>
@@ -448,7 +448,7 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: "bold", fontSize: 17 }}>
-          <AthenaIcon size={22} />
+          <AthenaIcon size={30} />
           <span>Athenias × {angels}</span>
         </span>
         <span style={{ opacity: 0.55, fontVariantNumeric: "tabular-nums" }}>
@@ -538,8 +538,8 @@ function TrueFalseGame({ onExit }: { onExit: () => void }) {
           }}
         >
           {Array.from({ length: Math.min(angels, 6) }).map((_, i) => (
-            <div key={i} style={{ marginTop: i === 0 ? 0 : -14 }}>
-              <AthenaIcon size={38} />
+            <div key={i} style={{ marginTop: i === 0 ? 0 : -8 }}>
+              <AthenaIcon size={52} />
             </div>
           ))}
         </div>
@@ -573,25 +573,93 @@ function Gate({ color }: { color: string }) {
   );
 }
 
-// A simplified, black-and-white low-poly winged figure — the Athenia statue
-// (raised V-wings, faceted chevron torso, small head), reduced to a handful of
-// polygons so it reads at small sizes.
+// The "you made it" mark: William's Athenia artwork, dropped in as
+// public/athenia.png. If the file isn't there the in-game vector stands in, so
+// the screen never shows a broken image.
+function VictoryMark() {
+  const [missing, setMissing] = useState(false);
+  if (missing) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <AthenaIcon size={170} />
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/athenia.png"
+      alt="Athenia"
+      onError={() => setMissing(true)}
+      style={{ display: "block", width: 170, height: "auto", margin: "0 auto" }}
+    />
+  );
+}
+
+// The Athenia statue as a low-poly winged bust: wings spread wide from behind
+// the shoulders, faceted torso, white carved face framed by faceted hair. The
+// palette runs warm on the left and cool on the right — same rainbow read as
+// the logo. Layers are drawn back-to-front (wings, torso, neck, hair, face).
 function AthenaIcon({ size = 34 }: { size?: number }) {
   return (
-    <svg width={size} height={(size * 52) / 64} viewBox="0 0 64 52" aria-hidden="true">
-      {/* LEFT WING — raised and out, two facets */}
-      <polygon points="30,23 4,5 16,25" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      <polygon points="30,23 16,25 29,29" fill="#c9c9c9" stroke="#111" strokeWidth="0.8" />
-      {/* RIGHT WING */}
-      <polygon points="34,23 60,5 48,25" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      <polygon points="34,23 48,25 35,29" fill="#a9a9a9" stroke="#111" strokeWidth="0.8" />
-      {/* HEAD */}
-      <polygon points="32,3 37,10 32,13 27,10" fill="#ffffff" stroke="#111" strokeWidth="1" />
-      {/* TORSO — faceted chevron, split light/dark */}
-      <polygon points="32,13 44,25 32,50" fill="#ededed" stroke="#111" strokeWidth="1" />
-      <polygon points="32,13 20,25 32,50" fill="#bdbdbd" stroke="#111" strokeWidth="1" />
-      {/* central highlight facet */}
-      <polygon points="32,20 37,30 32,44 27,30" fill="#ffffff" stroke="#111" strokeWidth="0.7" />
+    <svg width={size} height={(size * 76) / 128} viewBox="0 0 128 76" aria-hidden="true">
+      <g stroke="#241c17" strokeWidth="0.75" strokeLinejoin="round">
+        {/* LEFT WING — six feathers fanning from behind the shoulder */}
+        <polygon points="58,44 3,5 6,16" fill="#e6a25c" />
+        <polygon points="58,44 6,16 11,26" fill="#e59a68" />
+        <polygon points="58,44 11,26 17,35" fill="#e39177" />
+        <polygon points="58,44 17,35 24,43" fill="#e18a88" />
+        <polygon points="58,44 24,43 31,50" fill="#e08a98" />
+        <polygon points="58,44 31,50 38,55" fill="#e29a92" />
+        {/* RIGHT WING — mirrored, cool half of the palette */}
+        <polygon points="70,44 125,5 122,16" fill="#9b9ad6" />
+        <polygon points="70,44 122,16 117,26" fill="#8fa2da" />
+        <polygon points="70,44 117,26 111,35" fill="#82abda" />
+        <polygon points="70,44 111,35 104,43" fill="#79b2d2" />
+        <polygon points="70,44 104,43 97,50" fill="#74b6c8" />
+        <polygon points="70,44 97,50 90,55" fill="#79b3bd" />
+
+        {/* TORSO — fan of facets, warm on the left, green/teal on the right */}
+        <polygon points="64,50 57,30 46,44" fill="#eaa95c" />
+        <polygon points="64,50 46,44 45,54" fill="#e7a75e" />
+        <polygon points="64,50 45,54 52,74" fill="#e3a662" />
+        <polygon points="64,50 52,74 76,74" fill="#d7ae6d" />
+        <polygon points="64,50 76,74 83,54" fill="#a8c092" />
+        <polygon points="64,50 83,54 82,44" fill="#83bfa8" />
+        <polygon points="64,50 82,44 71,30" fill="#79bbb2" />
+        <polygon points="64,50 71,30 57,30" fill="#ddb073" />
+        {/* inner star — lighter tints, keeps the chest from reading flat */}
+        <g strokeWidth="0.5">
+          <polygon points="64,50 56,45 64,40" fill="#f0bb72" />
+          <polygon points="64,50 64,40 72,45" fill="#96c5ab" />
+          <polygon points="64,50 72,45 72,56" fill="#86c0b4" />
+          <polygon points="64,50 72,56 64,61" fill="#b6c397" />
+          <polygon points="64,50 64,61 56,56" fill="#eeb96f" />
+          <polygon points="64,50 56,56 56,45" fill="#f2c07b" />
+        </g>
+
+        {/* NECK — warm on the left, cool on the right */}
+        <polygon points="58,21 64,21 64,33 55,33" fill="#f0c078" />
+        <polygon points="64,21 70,21 73,33 64,33" fill="#6cb5b8" />
+
+        {/* HAIR — framing facets, warm left / cool right, olive crown */}
+        <polygon points="64,4 57,6 52,13 60,11" fill="#e0a05a" />
+        <polygon points="52,13 52,26 57,30 60,20 60,11" fill="#dd8d84" />
+        <polygon points="64,4 71,6 76,13 68,11" fill="#6fb4bc" />
+        <polygon points="76,13 76,26 71,30 68,20 68,11" fill="#9a97cf" />
+        <polygon points="64,4 60,11 64,9 68,11" fill="#93b078" />
+
+        {/* FACE — white marble, split down the middle */}
+        <polygon points="64,7 59,11 59,20 64,27" fill="#ffffff" />
+        <polygon points="64,7 69,11 69,20 64,27" fill="#f2f2f2" />
+        {/* carved features — faint at small sizes, detail when scaled up */}
+        <g fill="none" strokeWidth="0.45" strokeLinecap="round">
+          <path d="M60.6,15 L63,14" />
+          <path d="M65,14 L67.4,15" />
+          <path d="M64,13 L64,19 M62.2,20 L64,21 L65.8,20" />
+          <path d="M62,23 L64,22.6 L66,23" />
+        </g>
+      </g>
     </svg>
   );
 }

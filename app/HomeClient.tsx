@@ -13,6 +13,19 @@ import WhatsNew from "./WhatsNew";
 import AuthButton from "./components/AuthButton";
 import PricingModal from "./components/PricingModal";
 import { createClient } from "@/lib/supabase/client";
+import { btnColors } from "@/lib/theme";
+import {
+  PAGES,
+  PAGE_BLOCKS,
+  DEFAULT_BLOCK_ORDER,
+  applyLayout,
+  loadLayout,
+  pageLayout,
+  saveLayout,
+  type LayoutMap,
+  type PageId,
+  type PageLayout
+} from "@/lib/layout";
 import { fetchSettings, saveSettings, type Settings } from "@/lib/userSettings";
 import {
   loadStats,
@@ -130,6 +143,14 @@ const MAX_IMAGES = 5;
 // history, Updates, ...) and coming back doesn't throw it away. sessionStorage,
 // not localStorage: it should outlive a navigation, not a whole browser session.
 const QUIZ_SESSION_KEY = "atheniaActiveQuiz";
+
+// Arrange picker: pages that are their own route, so picking one navigates
+// there. Everything else (the quiz tabs, the settings panel) opens in place.
+const ARRANGE_HREFS: Partial<Record<PageId, string>> = {
+  games: "/games",
+  history: "/history",
+  customize: "/customize"
+};
 
 // Parks the restart button just off the right edge of a Generate button, out of
 // the flow so showing it never shifts the (centered) Generate button.
@@ -341,6 +362,95 @@ export default function Home({
   const [showStats, setShowStats] = useState(false); // the Stats panel
   const [statsData, setStatsData] = useState<Stats | null>(null); // snapshot shown in the Stats panel
   const [showPricing, setShowPricing] = useState(false); // the Athenia Pro upgrade screen
+
+  // --- Arrange mode (the move button, top-right) ----------------------------
+  // Read lazily on the client. Nothing in the render output depends on this —
+  // the block order/visibility goes out as CSS variables (applyLayout below),
+  // so the server HTML and the first client render still match exactly.
+  const [layoutMap, setLayoutMap] = useState<LayoutMap>(() =>
+    typeof window === "undefined" ? {} : loadLayout()
+  );
+  const [arrangeOpen, setArrangeOpen] = useState(false); // the page picker
+  const [arrangePage, setArrangePage] = useState<PageId | null>(null); // page being edited
+  // The block being dragged in the arrange panel, and the slot it would land in.
+  // The list does NOT reshuffle mid-drag (that fights the drag ghost) — an
+  // indicator marks the slot and the move happens on drop, same as the folder bar.
+  const [dragBlock, setDragBlock] = useState<string | null>(null);
+  const [blockDropIndex, setBlockDropIndex] = useState<number | null>(null);
+
+  // Publish the active tab's arrangement as CSS variables.
+  useEffect(() => {
+    applyLayout(layoutMap, mode);
+  }, [layoutMap, mode]);
+
+  // Each block reads its own order/display var, falling back to the position it
+  // has always occupied — so an unarranged page needs no JS at all to look right.
+  const blockStyle = (id: string, display: string): React.CSSProperties => ({
+    order: `var(--blk-${id}-order, ${DEFAULT_BLOCK_ORDER[id] ?? 0})`,
+    display: `var(--blk-${id}-display, ${display})`
+  });
+
+  function writeLayout(page: PageId, next: PageLayout) {
+    setLayoutMap((prev) => {
+      const merged = { ...prev, [page]: next };
+      saveLayout(merged);
+      return merged;
+    });
+  }
+
+  // Reset = forget this page's entry entirely, so it falls back to the defaults.
+  function resetPageLayout(page: PageId) {
+    setLayoutMap((prev) => {
+      const next = { ...prev };
+      delete next[page];
+      saveLayout(next);
+      return next;
+    });
+  }
+
+  function toggleBlock(page: PageId, id: string) {
+    const cur = pageLayout(layoutMap, page);
+    writeLayout(page, {
+      ...cur,
+      hidden: cur.hidden.includes(id)
+        ? cur.hidden.filter((h) => h !== id)
+        : [...cur.hidden, id]
+    });
+  }
+
+  // Show the page being arranged. The quiz tabs swap the active mode and the
+  // Settings page is the cog panel — both live on this screen, so the arrange
+  // panel stays open beside them. (Pages that are their own route are linked
+  // instead; see ARRANGE_HREFS.)
+  function openArrangePage(id: PageId) {
+    setArrangePage(id);
+    if (id === "text" || id === "image" || id === "audio") switchMode(id);
+    if (id === "settings") setShowSettings(true);
+  }
+
+  // While dragging over a row, mark whether the block would land above or below
+  // it, by which half of the row the cursor is on.
+  function markBlockDrop(index: number, e: React.DragEvent) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const idx = e.clientY > rect.top + rect.height / 2 ? index + 1 : index;
+    if (blockDropIndex !== idx) setBlockDropIndex(idx);
+  }
+
+  // Apply the move once the drag ends.
+  function commitBlockOrder(page: PageId) {
+    const cur = pageLayout(layoutMap, page);
+    const from = cur.order.indexOf(dragBlock ?? "");
+    let to = blockDropIndex;
+    setDragBlock(null);
+    setBlockDropIndex(null);
+    if (from === -1 || to === null) return;
+    if (to > from) to -= 1; // pulling `from` out shifts everything after it up
+    if (to === from) return; // dropped back where it started
+    const order = [...cur.order];
+    const [moved] = order.splice(from, 1);
+    order.splice(to, 0, moved);
+    writeLayout(page, { ...cur, order });
+  }
   const [isPro, setIsPro] = useState(initialIsPro); // does this account have an active subscription?
   // When streak-earned Pro runs out (ISO string), or null if none is banked.
   // The server owns this — see lib/proGrants.ts — the client only displays it.
@@ -365,6 +475,7 @@ export default function Home({
   const settingsButtonRef = useRef<HTMLButtonElement>(null); // the cog button
   const mobileMenuRef = useRef<HTMLDivElement>(null); // the mobile hamburger + its dropdown
   const accountMenuRef = useRef<HTMLDivElement>(null); // the mobile account button + its dropdown
+  const arrangeRef = useRef<HTMLDivElement>(null); // the arrange button + its panel
   const skipFirstSave = useRef(true); // don't save settings on the very first render
   const cloudReady = useRef(false); // true once we've loaded (or migrated) this user's cloud settings
   const cloudSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // debounces cloud writes
@@ -396,6 +507,19 @@ export default function Home({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [mobileMenuOpen]);
+
+  // Close the arrange panel when you click outside it
+  useEffect(() => {
+    if (!arrangeOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (!arrangeRef.current?.contains(e.target as Node)) {
+        setArrangeOpen(false);
+        setArrangePage(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [arrangeOpen]);
 
   // Close the account dropdown when you tap outside it
   useEffect(() => {
@@ -459,7 +583,10 @@ export default function Home({
       const target = e.target as Node;
       if (
         settingsRef.current?.contains(target) ||
-        settingsButtonRef.current?.contains(target)
+        settingsButtonRef.current?.contains(target) ||
+        // Arrange can open this panel, so the two have to coexist — clicking
+        // around in the arrange panel mustn't close what it just opened.
+        arrangeRef.current?.contains(target)
       ) {
         return;
       }
@@ -1810,10 +1937,12 @@ export default function Home({
             disabled={rechallengeLoading || loading}
             style={{
               padding: "12px 28px",
-              background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
-              color: yellow ? "#1a1a1a" : "white",
+              ...btnColors("submit", {
+                width: 0,
+                bg: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
+                text: yellow ? "#1a1a1a" : "white"
+              }),
               fontWeight: "bold",
-              border: "none",
               borderRadius: "var(--btn-radius, 3px)",
               fontSize: 16,
               cursor: "pointer"
@@ -1831,9 +1960,10 @@ export default function Home({
             title={`Practise the ${wrong} you missed with ${wrong * 2} fresh questions`}
             style={{
               padding: "12px 24px",
-              background: "transparent",
-              color: RECHALLENGE_YELLOW,
-              border: `2px solid ${RECHALLENGE_BTN}`,
+              ...btnColors("rechallenge", {
+                text: RECHALLENGE_YELLOW,
+                border: RECHALLENGE_BTN
+              }),
               borderRadius: "var(--btn-radius, 3px)",
               fontWeight: "bold",
               fontSize: 16,
@@ -1873,9 +2003,7 @@ export default function Home({
           borderRadius: "var(--btn-radius, 3px)",
           // Match Generate: borderless on the same fill, so it reads as part of
           // the pair instead of an outlined box stuck to its side.
-          border: "none",
-          background: ACCENT_BG,
-          color: ACCENT_TEXT,
+          ...btnColors("clear", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
           cursor: "pointer"
         }}
       >
@@ -2073,7 +2201,17 @@ export default function Home({
   // 64-311 while those buttons end at 55 and start at 320 — it slots between
   // them rather than below them, which is what the old 104px padding forced.
   return (
-    <main style={{ padding: isMobile ? "56px 16px 40px" : 40 }}>
+    // Flex column so Arrange mode can reorder blocks with CSS `order` alone —
+    // no absolute positioning, nothing that can land off-screen. Anything
+    // without an order (modals, fixed bars) keeps the default 0 and so stays
+    // exactly where it was.
+    <main
+      style={{
+        padding: isMobile ? "56px 16px 40px" : 40,
+        display: "flex",
+        flexDirection: "column"
+      }}
+    >
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -2173,8 +2311,8 @@ export default function Home({
         {!isMobile && <AuthButton />}
         {!isMobile &&
         [
-          { label: "Updates", href: "/updates" },
-          { label: "Support", href: "/support" }
+          { id: "updates", label: "Updates", href: "/updates" },
+          { id: "support", label: "Support", href: "/support" }
         ].map((link) => (
           <Link
             key={link.href}
@@ -2185,9 +2323,7 @@ export default function Home({
               display: "inline-flex",
               alignItems: "center",
               borderRadius: "var(--btn-radius, 3px)",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors(link.id as "updates" | "support"),
               fontSize: 16,
               textDecoration: "none",
               cursor: "pointer"
@@ -2196,6 +2332,299 @@ export default function Home({
             {link.label}
           </Link>
         ))}
+
+        {/* Arrange — square with four stemless arrows. Opens the layout editor:
+            pick a page, then reorder or hide that page's blocks. */}
+        {!isMobile && (
+          <div ref={arrangeRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => {
+                setArrangeOpen((v) => !v);
+                setArrangePage(null);
+              }}
+              aria-label="Arrange layout"
+              aria-expanded={arrangeOpen}
+              title="Arrange layout"
+              style={{
+                width: 40,
+                height: 40,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: "50%",
+                border: `2px solid ${arrangeOpen ? ACCENT_TEXT : "#888"}`,
+                background: arrangeOpen ? ACCENT_BG : "transparent",
+                color: "inherit",
+                cursor: "pointer"
+              }}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+                <rect
+                  x="9"
+                  y="9"
+                  width="6"
+                  height="6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+                {/* four arrowheads, no stems */}
+                <path d="M12 1.5 L15.4 6 H8.6 Z" fill="currentColor" />
+                <path d="M12 22.5 L8.6 18 H15.4 Z" fill="currentColor" />
+                <path d="M1.5 12 L6 8.6 V15.4 Z" fill="currentColor" />
+                <path d="M22.5 12 L18 15.4 V8.6 Z" fill="currentColor" />
+              </svg>
+            </button>
+
+            {arrangeOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 46,
+                  right: 0,
+                  width: 250,
+                  padding: 10,
+                  background: "var(--background)",
+                  border: "2px solid #888",
+                  borderRadius: "var(--btn-radius, 3px)",
+                  zIndex: 1001
+                }}
+              >
+                {arrangePage === null ? (
+                  <>
+                    <div style={{ fontSize: 12, opacity: 0.6, padding: "2px 4px 8px" }}>
+                      Which page do you want to arrange?
+                    </div>
+                    {PAGES.map((p) => {
+                      // Picking a page takes you to it, so you're looking at
+                      // what you're arranging. The three quiz tabs and the
+                      // settings panel live on this screen; the rest are routes.
+                      const href = ARRANGE_HREFS[p.id];
+                      const rowStyle: React.CSSProperties = {
+                        flex: 1,
+                        textAlign: "left",
+                        padding: "8px 6px",
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        fontSize: 14,
+                        textDecoration: "none",
+                        cursor: "pointer"
+                      };
+                      return (
+                      <div
+                        key={p.id}
+                        style={{ display: "flex", alignItems: "center", gap: 6 }}
+                      >
+                        {href ? (
+                          <Link href={href} style={rowStyle}>
+                            {p.name}
+                          </Link>
+                        ) : (
+                          <button onClick={() => openArrangePage(p.id)} style={rowStyle}>
+                            {p.name}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => resetPageLayout(p.id)}
+                          title={`Reset ${p.name} to the default layout`}
+                          aria-label={`Reset ${p.name}`}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            flexShrink: 0,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
+                            border: "none",
+                            borderRadius: "var(--btn-radius, 3px)",
+                            background: ACCENT_BG,
+                            color: ACCENT_TEXT,
+                            cursor: "pointer"
+                          }}
+                        >
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                            <path d="M3 3v5h5" />
+                          </svg>
+                        </button>
+                      </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "2px 4px 8px"
+                      }}
+                    >
+                      <button
+                        onClick={() => setArrangePage(null)}
+                        aria-label="Back to pages"
+                        style={{
+                          padding: 0,
+                          border: "none",
+                          background: "transparent",
+                          color: "inherit",
+                          fontSize: 16,
+                          lineHeight: 1,
+                          cursor: "pointer"
+                        }}
+                      >
+                        ←
+                      </button>
+                      <span style={{ fontSize: 12, opacity: 0.6 }}>
+                        {PAGES.find((p) => p.id === arrangePage)?.name}
+                        {PAGE_BLOCKS[arrangePage].length > 0 && " — drag to reorder"}
+                      </span>
+                    </div>
+
+                    {PAGE_BLOCKS[arrangePage].length === 0 ? (
+                      <div style={{ fontSize: 13, opacity: 0.6, padding: "6px 4px 4px" }}>
+                        Nothing to arrange on this page yet.
+                      </div>
+                    ) : (
+                      <div
+                        // Keep the gaps between rows valid drop targets, and drop
+                        // the marker if the drag wanders out of the list entirely.
+                        onDragOver={(e) => {
+                          if (dragBlock) e.preventDefault();
+                        }}
+                        onDragLeave={(e) => {
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                            setBlockDropIndex(null);
+                          }
+                        }}
+                      >
+                      {(() => {
+                        const cur = pageLayout(layoutMap, arrangePage);
+                        const last = cur.order.length - 1;
+                        return cur.order.map((id, index) => {
+                          const def = PAGE_BLOCKS[arrangePage].find((b) => b.id === id);
+                          if (!def) return null;
+                          const off = cur.hidden.includes(id);
+                          const dragging = dragBlock === id;
+                          // Indicator sits on the edge the block would land at.
+                          // An inset shadow, so it never nudges the layout.
+                          const marker =
+                            dragBlock && blockDropIndex === index
+                              ? `inset 0 3px 0 ${STREAK_FROZEN_BLUE}`
+                              : dragBlock && blockDropIndex === last + 1 && index === last
+                                ? `inset 0 -3px 0 ${STREAK_FROZEN_BLUE}`
+                                : undefined;
+                          return (
+                            <div
+                              key={id}
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData("text/plain", id); // Firefox needs data set
+                                e.dataTransfer.effectAllowed = "move";
+                                setDragBlock(id);
+                              }}
+                              onDragOver={(e) => {
+                                if (!dragBlock) return;
+                                e.preventDefault(); // marks this a valid drop target
+                                e.dataTransfer.dropEffect = "move";
+                                markBlockDrop(index, e);
+                              }}
+                              onDrop={(e) => e.preventDefault()}
+                              onDragEnd={() => commitBlockOrder(arrangePage)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                padding: "7px 6px",
+                                marginBottom: 2,
+                                border: "1px solid #888",
+                                borderRadius: "var(--btn-radius, 3px)",
+                                background: dragging ? "rgba(136,136,136,0.15)" : "transparent",
+                                boxShadow: marker,
+                                opacity: dragging ? 0.4 : off ? 0.45 : 1,
+                                cursor: dragging ? "grabbing" : "grab",
+                                userSelect: "none" // no text selection while dragging
+                              }}
+                            >
+                              {/* grip */}
+                              <span
+                                aria-hidden="true"
+                                style={{ opacity: 0.5, fontSize: 13, lineHeight: 1 }}
+                              >
+                                ⠿
+                              </span>
+                              <span style={{ flex: 1, fontSize: 14 }}>{def.name}</span>
+                              <button
+                                draggable={false}
+                                onClick={() => toggleBlock(arrangePage, id)}
+                                title={off ? `Show ${def.name}` : `Hide ${def.name}`}
+                                aria-label={off ? `Show ${def.name}` : `Hide ${def.name}`}
+                                style={{
+                                  padding: 0,
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "inherit",
+                                  lineHeight: 0,
+                                  cursor: "pointer"
+                                }}
+                              >
+                                <svg
+                                  width="17"
+                                  height="17"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                  {off && <path d="M3 3l18 18" />}
+                                </svg>
+                              </button>
+                            </div>
+                          );
+                        });
+                      })()}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => resetPageLayout(arrangePage)}
+                      style={{
+                        width: "100%",
+                        marginTop: 8,
+                        padding: "7px 0",
+                        border: "1px solid #888",
+                        borderRadius: "var(--btn-radius, 3px)",
+                        background: "transparent",
+                        color: "inherit",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        opacity: 0.8
+                      }}
+                    >
+                      Reset this page
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Quiz History — circular button with a history (clock + back-arrow) icon */}
         {!isMobile && (
@@ -2210,9 +2639,7 @@ export default function Home({
               alignItems: "center",
               justifyContent: "center",
               borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors("history"),
               textDecoration: "none",
               cursor: "pointer"
             }}
@@ -2247,9 +2674,7 @@ export default function Home({
               alignItems: "center",
               justifyContent: "center",
               borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors("customize"),
               cursor: "pointer"
             }}
           >
@@ -2290,9 +2715,7 @@ export default function Home({
               alignItems: "center",
               justifyContent: "center",
               borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors("stats"),
               cursor: "pointer"
             }}
           >
@@ -2379,9 +2802,7 @@ export default function Home({
           width: 40,
           height: 40,
           borderRadius: "50%",
-          border: "2px solid #888",
-          background: "var(--background)",
-          color: "inherit",
+          ...btnColors("help", { bg: "var(--background)" }),
           fontSize: 24,
           fontWeight: "bold",
           cursor: "pointer",
@@ -2505,10 +2926,8 @@ export default function Home({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  border: "2px solid #777",
                   borderRadius: "50%",
-                  background: "var(--background)",
-                  color: "inherit",
+                  ...btnColors("account", { border: "#777", bg: "var(--background)" }),
                   cursor: "pointer",
                   overflow: "hidden"
                 }}
@@ -2539,10 +2958,8 @@ export default function Home({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                border: "2px solid #777",
                 borderRadius: "50%",
-                background: "var(--background)",
-                color: "inherit",
+                ...btnColors("account", { border: "#777", bg: "var(--background)" }),
                 cursor: "pointer"
               }}
             >
@@ -2576,9 +2993,7 @@ export default function Home({
           width: 40,
           height: 40,
           borderRadius: "50%",
-          border: "2px solid #888",
-          background: "var(--background)",
-          color: "inherit",
+          ...btnColors("settings", { bg: "var(--background)" }),
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
@@ -2851,7 +3266,8 @@ export default function Home({
           marginBottom: 0,   // the streak's margin owns the gap below
           lineHeight: isMobile ? 1.0 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
-          color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
+          color: isPro ? STREAK_FROZEN_BLUE : undefined, // Pro accounts wear the light blue
+          ...blockStyle("title", "block")
         }}
       >
         {isPro ? (
@@ -2869,7 +3285,7 @@ export default function Home({
         )}
       </h1>
 
-      {renderStreak()}
+      <div style={blockStyle("streak", "block")}>{renderStreak()}</div>
 
       {/* Tab bar: fixed at the top-left (desktop only — mobile uses the menu) */}
       {!isMobile && (
@@ -2892,9 +3308,10 @@ export default function Home({
               height: 40,
               padding: "0 16px",
               borderRadius: "var(--btn-radius, 3px)",
-              border: "2px solid #888",
-              background: mode === m ? ACCENT_BG : "transparent",
-              color: mode === m ? ACCENT_TEXT : "inherit",
+              ...btnColors(m, {
+                bg: mode === m ? ACCENT_BG : "transparent",
+                text: mode === m ? ACCENT_TEXT : "inherit"
+              }),
               fontWeight: "bold",
               fontSize: 16,
               cursor: "pointer",
@@ -2913,9 +3330,7 @@ export default function Home({
             display: "inline-flex",
             alignItems: "center",
             borderRadius: "var(--btn-radius, 3px)",
-            border: "2px solid #888",
-            background: "transparent",
-            color: "inherit",
+            ...btnColors("games"),
             fontWeight: "bold",
             fontSize: 16,
             textDecoration: "none"
@@ -2985,9 +3400,11 @@ export default function Home({
                   style={{
                     padding: "12px 16px",
                     textAlign: "left",
-                    border: "none",
-                    background: mode === m ? ACCENT_BG : "transparent",
-                    color: mode === m ? ACCENT_TEXT : "inherit",
+                    ...btnColors(m, {
+                      width: 0,
+                      bg: mode === m ? ACCENT_BG : "transparent",
+                      text: mode === m ? ACCENT_TEXT : "inherit"
+                    }),
                     fontSize: 16,
                     fontWeight: mode === m ? "bold" : "normal",
                     cursor: "pointer",
@@ -3003,9 +3420,7 @@ export default function Home({
                 style={{
                   padding: "12px 16px",
                   textAlign: "left",
-                  border: "none",
-                  background: "transparent",
-                  color: "inherit",
+                  ...btnColors("games", { width: 0 }),
                   fontSize: 16,
                   textDecoration: "none",
                   cursor: "pointer"
@@ -3151,7 +3566,8 @@ export default function Home({
           marginTop: 0,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
           borderRadius: "var(--btn-radius, 3px)",
-          transition: "border-color 0.15s"
+          transition: "border-color 0.15s",
+          ...blockStyle("input", "block")
         }}
       >
         {/* Toolbar: the click-to-upload button plus a hint about the other ways */}
@@ -3256,7 +3672,14 @@ export default function Home({
 
       {/* Generate stays centered under the textarea; the restart hangs off its
           right absolutely so it can't nudge the button when it appears. */}
-      <div style={{ position: "relative", width: "fit-content", margin: "12px auto 0" }}>
+      <div
+        style={{
+          position: "relative",
+          width: "fit-content",
+          margin: "12px auto 0",
+          ...blockStyle("generate", "block")
+        }}
+      >
         <button
           onClick={() => generateQuestions()}
           disabled={loading}
@@ -3265,9 +3688,7 @@ export default function Home({
             padding: "10px 24px",
             minWidth: 190,
             height: 44,
-            background: ACCENT_BG,
-            color: ACCENT_TEXT,
-            border: "none",
+            ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
             borderRadius: "var(--btn-radius, 3px)",
             fontSize: 16,
             cursor: loading ? "default" : "pointer"
@@ -3299,11 +3720,11 @@ export default function Home({
       {mode === "image" && (
         <div
           style={{
-            display: "flex",
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: isMobile ? 0 : 20
+            marginTop: isMobile ? 0 : 20,
+            ...blockStyle("input", "flex")
           }}
         >
           {/* Left column: uploaded image previews (desktop only; on mobile a
@@ -3481,9 +3902,7 @@ export default function Home({
                   padding: "10px 24px",
                   minWidth: 190,
                   height: 44,
-                  background: ACCENT_BG,
-                  color: ACCENT_TEXT,
-                  border: "none",
+                  ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
                   borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
@@ -3518,11 +3937,11 @@ export default function Home({
       {mode === "audio" && (
         <div
           style={{
-            display: "flex",
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: isMobile ? 0 : 20
+            marginTop: isMobile ? 0 : 20,
+            ...blockStyle("input", "flex")
           }}
         >
           {/* Left column: uploaded audio/video players (desktop only; on mobile a
@@ -3987,9 +4406,7 @@ export default function Home({
                   padding: "10px 24px",
                   minWidth: 190,
                   height: 44,
-                  background: ACCENT_BG,
-                  color: ACCENT_TEXT,
-                  border: "none",
+                  ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
                   borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
@@ -4020,7 +4437,18 @@ export default function Home({
         </div>
       )}
 
-      <div style={{ marginTop: 32 }}>
+      {/* Questions flow into --q-cols columns (Customize -> Question layout).
+          One column is the default and lays out exactly like the old block
+          stack; mobile is pinned to one regardless, since there's never room. */}
+      <div
+        style={{
+          marginTop: 32,
+          gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "var(--q-cols, minmax(0, 1fr))",
+          columnGap: 18,
+          alignItems: "start",
+          ...blockStyle("questions", "grid")
+        }}
+      >
         {questions.map((q, i) => {
           const qRound = q.round ?? 0;
           // Reveal right/wrong once this question's round is graded, OR instantly
@@ -4065,13 +4493,24 @@ export default function Home({
               className={`q-card${flashIndex === i ? " flash-missing" : ""}`}
               style={{
                 position: "relative",
-                padding: 12,
+                // The optional question box (Customize -> Question box). When it's
+                // off these vars are unset and the card keeps its old borderless,
+                // full-width look. When it's on, every card gets the SAME width and
+                // padding — heights still follow the content, so a True/False box
+                // is shorter than a four-option one.
+                padding: "var(--qbox-pad, 12px)",
+                maxWidth: "var(--qbox-width, none)",
+                border: "var(--qbox-border, none)",
+                background: "var(--qbox-fill, transparent)",
                 borderRadius: "var(--btn-radius, 3px)",
+                // Set on the card, not the question line, so the answers, hint
+                // and written-answer text all pick the font up too.
+                fontFamily: "var(--q-font, inherit)",
                 // A hint slots INTO the existing gap between choice D and the next
                 // question rather than adding to it: giving up this card's bottom
                 // padding/margin buys back exactly the room the hint takes, so the
                 // question-to-question spacing is unchanged (see the hint's marginTop).
-                paddingBottom: hints[i] ? 0 : 12,
+                paddingBottom: hints[i] ? 0 : "var(--qbox-pad, 12px)",
                 marginBottom: hints[i] ? 3 : 18
               }}
             >
@@ -4092,6 +4531,9 @@ export default function Home({
                   padding: 0,
                   background: "transparent",
                   border: "none",
+                  // Icon-only, so the hint's custom colour drives the glyph
+                  // rather than a fill/border the bulb doesn't have.
+                  color: `var(--bct-hint, ${HINT_YELLOW})`,
                   lineHeight: 0,
                   cursor: hints[i] ? "default" : "pointer"
                 }}
@@ -4101,8 +4543,8 @@ export default function Home({
                   height="18"
                   viewBox="0 0 24 24"
                   // Filled once a hint has been taken, otherwise an outline.
-                  fill={hints[i]?.status === "done" ? HINT_YELLOW : "none"}
-                  stroke={HINT_YELLOW}
+                  fill={hints[i]?.status === "done" ? "currentColor" : "none"}
+                  stroke="currentColor"
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -4227,7 +4669,11 @@ export default function Home({
               )}
             </div>
             {/* After the last question of each round: its Submit / grade / Rechallenge */}
-            {isLastOfRound && renderRoundControls(qRound)}
+            {/* Round controls break the column flow — they always span the
+                full width, so the Submit row sits under every column. */}
+            {isLastOfRound && (
+              <div style={{ gridColumn: "1 / -1" }}>{renderRoundControls(qRound)}</div>
+            )}
             </Fragment>
           );
         })}

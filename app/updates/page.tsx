@@ -6,9 +6,9 @@ export const metadata = { title: "Updates — Athenia" };
 const UPDATES = [
   {
     version: "0.7",
-    date: "July 24",
+    date: "July 25",
     items: [
-      "2 minigames on a brand new 'Games' page",
+      "Minigame on a brand new 'Games' page",
       "Reworked Quiz History page",
       "Customizable buttons, quiz layout, and quiz folder colors",
       "Optional written answers for generated questions",
