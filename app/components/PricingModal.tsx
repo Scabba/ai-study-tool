@@ -258,8 +258,13 @@ export default function PricingModal({
         inset: 0,
         background: "rgba(0,0,0,0.6)",
         display: "flex",
-        alignItems: "center",
         justifyContent: "center",
+        // Deliberately NOT align-items:center. Centering a flex child that's
+        // taller than the scroll container pushes its top above the container's
+        // top edge, and overflow in that direction can't be scrolled to — the
+        // checkout view (tall payment element) had its header permanently cut
+        // off. `margin: auto` on the panel below centers it when it fits and
+        // stays reachable when it doesn't.
         zIndex: 2000,
         padding: 20,
         overflowY: "auto"
@@ -271,10 +276,11 @@ export default function PricingModal({
           position: "relative",
           width: 620,
           maxWidth: "100%",
+          margin: "auto",
           background: "var(--background)",
           color: "var(--foreground)",
           border: "1px solid #888",
-          borderRadius: 3,
+          borderRadius: "var(--btn-radius, 3px)",
           padding: 28,
           boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
         }}
@@ -316,7 +322,7 @@ export default function PricingModal({
                 marginTop: 14,
                 padding: "6px 12px",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 background: "transparent",
                 color: "inherit",
                 fontSize: 13,
@@ -332,7 +338,7 @@ export default function PricingModal({
                 marginTop: 14,
                 padding: "12px 16px",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "baseline",
@@ -374,7 +380,7 @@ export default function PricingModal({
                   marginTop: 14,
                   padding: "12px 16px",
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 13,
                   color: BLUE
                 }}
@@ -400,7 +406,7 @@ export default function PricingModal({
                   background: "transparent",
                   color: "inherit",
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   outline: "none"
                 }}
               />
@@ -410,7 +416,7 @@ export default function PricingModal({
                 style={{
                   padding: "8px 14px",
                   border: "1px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   background: "transparent",
                   color: !payReady || !promo.trim() ? "#666" : "inherit",
                   fontSize: 14,
@@ -441,7 +447,7 @@ export default function PricingModal({
                 padding: "11px 0",
                 width: "100%",
                 border: "none",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 background: BLUE,
                 color: "#0f172a",
                 fontSize: 15,
@@ -471,15 +477,15 @@ export default function PricingModal({
         {/* Monthly / Yearly toggle */}
         <div
           style={{
-            display: "inline-flex",
+            // flex, not inline-flex: auto margins only centre a block-level
+            // box, so as an inline box this sat against the left edge.
+            display: "flex",
             gap: 4,
-            margin: "18px auto 0",
             padding: 4,
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             width: "fit-content",
-            marginLeft: "auto",
-            marginRight: "auto"
+            margin: "18px auto 0"
           }}
         >
           {(["monthly", "yearly"] as BillingCycle[]).map((c) => (
@@ -534,7 +540,7 @@ export default function PricingModal({
             style={{
               flex: "1 1 240px",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 20,
               display: "flex",
               flexDirection: "column"
@@ -554,7 +560,7 @@ export default function PricingModal({
                 padding: "10px 0",
                 width: "100%",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 background: "transparent",
                 color: "#888",
                 fontSize: 15,
@@ -570,7 +576,7 @@ export default function PricingModal({
             style={{
               flex: "1 1 240px",
               border: `2px solid ${BLUE}`,
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 20,
               display: "flex",
               flexDirection: "column"
@@ -600,7 +606,7 @@ export default function PricingModal({
                 padding: "10px 0",
                 width: "100%",
                 border: "none",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 background: BLUE,
                 color: "#0f172a", // dark text — white is unreadable on light blue
                 fontSize: 15,

@@ -11,7 +11,7 @@ const pill: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 8,
-  borderRadius: 3,
+  borderRadius: "var(--btn-radius, 3px)",
   border: "2px solid #888",
   background: "transparent",
   color: "inherit",
@@ -228,7 +228,7 @@ export default function AuthButton() {
             flexDirection: "column",
             background: "var(--background)",
             border: "2px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             overflow: "hidden",
             zIndex: 1001,
           }}

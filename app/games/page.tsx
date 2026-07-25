@@ -1,0 +1,716 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { DEFAULT_GATE_TRUE, DEFAULT_GATE_FALSE } from "@/lib/theme";
+
+// Reads a live CSS variable (set by ThemeLoader from the saved theme), falling
+// back to the default. Used for gate colours so they follow /customize.
+function cssVar(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+type TFQuestion = { statement: string; truth: boolean };
+
+// A game banner on the menu.
+function Banner({
+  title,
+  subtitle,
+  disabled,
+  onClick
+}: {
+  title: string;
+  subtitle: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 6,
+        width: "100%",
+        minHeight: 110,
+        padding: "20px 24px",
+        textAlign: "left",
+        border: "2px solid #888",
+        borderRadius: "var(--btn-radius, 3px)",
+        background: "transparent",
+        color: "inherit",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.5 : 1
+      }}
+    >
+      <span style={{ fontSize: 22, fontWeight: "bold" }}>{title}</span>
+      <span style={{ fontSize: 14, opacity: 0.7 }}>{subtitle}</span>
+    </button>
+  );
+}
+
+export default function GamesPage() {
+  const [game, setGame] = useState<null | "true-false">(null);
+
+  useEffect(() => {
+    document.title = "Games — Athenia";
+  }, []);
+
+  return (
+    <main style={{ padding: 40, maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ position: "relative", marginBottom: 28 }}>
+        <Link
+          href="/"
+          aria-label="Back to Athenia"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            color: "white",
+            fontSize: 32,
+            lineHeight: 1,
+            textDecoration: "none"
+          }}
+        >
+          ←
+        </Link>
+        <h1
+          style={{
+            textAlign: "center",
+            fontWeight: "bold",
+            fontSize: 40,
+            margin: 0,
+            // Keep the title clear of the absolutely-positioned back arrow.
+            padding: "0 56px"
+          }}
+        >
+          Games
+        </h1>
+      </div>
+
+      {game === "true-false" ? (
+        <TrueFalseGame onExit={() => setGame(null)} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Banner
+            title="True / False"
+            subtitle="Run your angels through the gate that matches the statement."
+            onClick={() => setGame("true-false")}
+          />
+          <Banner title="Type Master" subtitle="Coming soon." disabled />
+          <Banner title="Coming soon" subtitle="A third game is on the way." disabled />
+        </div>
+      )}
+    </main>
+  );
+}
+
+// --- True/False "Gate Runner" ------------------------------------------------
+
+const GATE_MS = 3000; // ms per gate (spawn -> reach the Athenias)
+const START_ANGELS = 3;
+const REWARD = 1; // right gate
+const PENALTY = -2; // wrong gate
+
+type Phase = "start" | "loading" | "playing" | "over";
+
+function TrueFalseGame({ onExit }: { onExit: () => void }) {
+  const [phase, setPhase] = useState<Phase>("start");
+  const [prompt, setPrompt] = useState("");
+  const [count, setCount] = useState(10);
+  const [leftKey, setLeftKey] = useState("a");
+  const [rightKey, setRightKey] = useState("d");
+  const [error, setError] = useState<string | null>(null);
+
+  // Gate colours, read live so they follow the customize page. Read once on
+  // mount (ThemeLoader has applied the saved theme by then).
+  const [colors, setColors] = useState({ t: DEFAULT_GATE_TRUE, f: DEFAULT_GATE_FALSE });
+  useEffect(() => {
+    /* eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the applied CSS vars */
+    setColors({ t: cssVar("--gate-true", DEFAULT_GATE_TRUE), f: cssVar("--gate-false", DEFAULT_GATE_FALSE) });
+  }, []);
+
+  const [questions, setQuestions] = useState<TFQuestion[]>([]);
+  const [angels, setAngels] = useState(START_ANGELS);
+  const [index, setIndex] = useState(0);
+  const [lane, setLane] = useState<0 | 1>(0); // 0 = left (true), 1 = right (false)
+  const [gateY, setGateY] = useState(0); // 0 (top) -> 1 (at the angels)
+  const [flash, setFlash] = useState<null | "right" | "wrong">(null);
+
+  // Refs mirror state for the animation loop (which shouldn't re-subscribe).
+  const laneRef = useRef(lane);
+  const angelsRef = useRef(angels);
+  const rafRef = useRef<number>(0);
+  const gateStartRef = useRef(0);
+  useEffect(() => {
+    laneRef.current = lane;
+  }, [lane]);
+  useEffect(() => {
+    angelsRef.current = angels;
+  }, [angels]);
+
+  // Fetch the true/false statements for the game.
+  async function start() {
+    if (!prompt.trim()) {
+      setError("Paste something to play with.");
+      return;
+    }
+    setError(null);
+    setPhase("loading");
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: prompt, count: 0, tfCount: count, writtenCount: 0, level: "" })
+      });
+      const text = await res.text();
+      const qs: TFQuestion[] = [];
+      let apiError: string | null = null;
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const o = JSON.parse(line);
+          if (o.type === "tf" && typeof o.question === "string") {
+            qs.push({ statement: o.question, truth: String(o.answer).toLowerCase() === "true" });
+          } else if (typeof o.error === "string") {
+            apiError = o.error; // rate limit, gibberish, etc.
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
+      if (qs.length === 0) {
+        setPhase("start");
+        // Surface the real reason (daily limit, sign-in needed, unusable notes).
+        setError(apiError ?? "Couldn't make questions from that. Try different notes.");
+        return;
+      }
+      setQuestions(qs);
+      setAngels(START_ANGELS);
+      setIndex(0);
+      setLane(0);
+      setGateY(0);
+      setPhase("playing");
+    } catch {
+      setPhase("start");
+      setError("Something went wrong starting the game.");
+    }
+  }
+
+  // Resolve the current gate: reward the matching lane, penalise the other.
+  const resolveGate = useCallback(
+    (i: number) => {
+      const q = questions[i];
+      if (!q) return;
+      // Left lane (blue) answers "true", right lane (red) answers "false".
+      const correct = (laneRef.current === 0) === q.truth;
+      setFlash(correct ? "right" : "wrong");
+      setTimeout(() => setFlash(null), 500);
+      const next = Math.max(0, angelsRef.current + (correct ? REWARD : PENALTY));
+      setAngels(next);
+      if (next <= 0) {
+        setPhase("over");
+        return;
+      }
+      if (i + 1 >= questions.length) {
+        setPhase("over");
+        return;
+      }
+      setIndex(i + 1);
+      setGateY(0);
+      gateStartRef.current = 0; // restart the timer for the next gate
+    },
+    [questions]
+  );
+
+  // The gate animation loop — advances the current gate from top to the angels
+  // over GATE_MS, then resolves it.
+  useEffect(() => {
+    if (phase !== "playing") return;
+    let resolvedFor = -1;
+    function tick(now: number) {
+      if (!gateStartRef.current) gateStartRef.current = now;
+      const p = Math.min(1, (now - gateStartRef.current) / GATE_MS);
+      setGateY(p);
+      if (p >= 1 && resolvedFor !== index) {
+        resolvedFor = index;
+        resolveGate(index);
+      } else {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    }
+    gateStartRef.current = 0;
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [phase, index, resolveGate]);
+
+  // Keyboard: move between lanes with the chosen keys (+ arrows always work).
+  useEffect(() => {
+    if (phase !== "playing") return;
+    function onKey(e: KeyboardEvent) {
+      const k = e.key.toLowerCase();
+      if (k === leftKey || e.key === "ArrowLeft") setLane(0);
+      else if (k === rightKey || e.key === "ArrowRight") setLane(1);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, leftKey, rightKey]);
+
+  // --- Start screen ---------------------------------------------------------
+  if (phase === "start" || phase === "loading") {
+    const box: React.CSSProperties = {
+      width: 90,
+      height: 44,
+      borderRadius: "var(--btn-radius, 3px)",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: "bold",
+      color: "#0f172a"
+    };
+    return (
+      <div>
+        <button
+          onClick={onExit}
+          style={{
+            marginBottom: 16,
+            padding: "6px 12px",
+            border: "1px solid #888",
+            borderRadius: "var(--btn-radius, 3px)",
+            background: "transparent",
+            color: "inherit",
+            fontSize: 13,
+            cursor: "pointer"
+          }}
+        >
+          ← Games
+        </button>
+        <h2 style={{ fontSize: 24, fontWeight: "bold", margin: "0 0 4px" }}>True / False</h2>
+        <p style={{ opacity: 0.7, marginTop: 0 }}>
+          Read the statement, then run your angels into the gate that matches.
+        </p>
+
+        {/* Colour example — shows meaning by colour, never by the word */}
+        <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "16px 0" }}>
+          <span style={{ ...box, background: colors.t }}>True</span>
+          <span style={{ ...box, background: colors.f }}>False</span>
+        </div>
+        <p style={{ fontSize: 13, opacity: 0.7, marginTop: -6 }}>
+          Customize gate colors through the customization page!
+        </p>
+
+        <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 6px" }}>Paste your notes</div>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Paste text to turn into true/false gates…"
+          rows={4}
+          style={{
+            width: "100%",
+            padding: 10,
+            fontSize: 15,
+            fontFamily: "inherit",
+            background: "transparent",
+            color: "inherit",
+            border: "1px solid #888",
+            borderRadius: "var(--quiz-radius, 3px)",
+            outline: "none",
+            resize: "vertical"
+          }}
+        />
+
+        <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 6px" }}>Questions</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[5, 10, 15, 20].map((n) => (
+            <button
+              key={n}
+              onClick={() => setCount(n)}
+              style={{
+                width: 44,
+                height: 36,
+                borderRadius: "var(--btn-radius, 3px)",
+                border: "2px solid #888",
+                background: count === n ? "#7dd3fc" : "transparent",
+                color: count === n ? "#0f172a" : "inherit",
+                fontWeight: count === n ? "bold" : "normal",
+                cursor: "pointer"
+              }}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 6px" }}>Controls</div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+          <KeyField label="Move left" value={leftKey} onChange={setLeftKey} />
+          <KeyField label="Move right" value={rightKey} onChange={setRightKey} />
+        </div>
+        <p style={{ fontSize: 12, opacity: 0.55, marginTop: 8 }}>
+          Arrow keys always work too. Left gate = matches a true statement; right gate = matches a false one.
+        </p>
+
+        {error && <div style={{ color: "#e0776b", fontSize: 14, marginTop: 12 }}>{error}</div>}
+
+        <button
+          onClick={start}
+          disabled={phase === "loading"}
+          style={{
+            marginTop: 18,
+            padding: "12px 28px",
+            border: "none",
+            borderRadius: "var(--btn-radius, 3px)",
+            background: "#57b98a",
+            color: "white",
+            fontWeight: "bold",
+            fontSize: 16,
+            cursor: phase === "loading" ? "default" : "pointer"
+          }}
+        >
+          {phase === "loading" ? (
+            <span className="loading-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+          ) : (
+            "Start"
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  // --- Game over ------------------------------------------------------------
+  if (phase === "over") {
+    const survived = angels > 0;
+    return (
+      <div style={{ textAlign: "center", paddingTop: 20 }}>
+        {survived ? <VictoryMark /> : <div style={{ fontSize: 48 }}>💀</div>}
+        <h2 style={{ fontSize: 26, fontWeight: "bold", margin: "8px 0" }}>
+          {survived ? "You made it!" : "Your Athenias fell"}
+        </h2>
+        <p style={{ opacity: 0.75 }}>
+          {survived
+            ? `You finished with ${angels} Athenia${angels === 1 ? "" : "s"}.`
+            : "Try again with fresh notes."}
+        </p>
+        <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 18 }}>
+          <button
+            onClick={() => setPhase("start")}
+            style={{
+              padding: "10px 22px",
+              border: "none",
+              borderRadius: "var(--btn-radius, 3px)",
+              background: "#57b98a",
+              color: "white",
+              fontWeight: "bold",
+              fontSize: 15,
+              cursor: "pointer"
+            }}
+          >
+            Play again
+          </button>
+          <button
+            onClick={onExit}
+            style={{
+              padding: "10px 22px",
+              border: "1px solid #888",
+              borderRadius: "var(--btn-radius, 3px)",
+              background: "transparent",
+              color: "inherit",
+              fontSize: 15,
+              cursor: "pointer"
+            }}
+          >
+            Games
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Playing --------------------------------------------------------------
+  const q = questions[index];
+  const flashGlow =
+    flash === "right"
+      ? "0 0 0 2px #57b98a, 0 0 26px rgba(87,185,138,0.55)"
+      : flash === "wrong"
+        ? "0 0 0 2px #e0776b, 0 0 26px rgba(224,119,107,0.55)"
+        : "none";
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: "bold", fontSize: 17 }}>
+          <AthenaIcon size={30} />
+          <span>Athenias × {angels}</span>
+        </span>
+        <span style={{ opacity: 0.55, fontVariantNumeric: "tabular-nums" }}>
+          {index + 1} / {questions.length}
+        </span>
+      </div>
+
+      {/* Statement above the gate — FIXED height so it never reflows the field */}
+      <div
+        style={{
+          height: 60,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          fontWeight: "bold",
+          fontSize: 18,
+          lineHeight: 1.25,
+          padding: "0 12px",
+          marginBottom: 10,
+          overflow: "hidden"
+        }}
+      >
+        {q?.statement}
+      </div>
+
+      {/* Playfield — fixed size; a deep panel with a lane divider and a floor */}
+      <div
+        style={{
+          position: "relative",
+          height: 400,
+          borderRadius: 12,
+          overflow: "hidden",
+          border: "1px solid #2a2f3a",
+          background: "linear-gradient(180deg, #0b0e14 0%, #131824 100%)",
+          boxShadow: flashGlow,
+          transition: "box-shadow 0.15s"
+        }}
+      >
+        {/* faint lane tints + centre divider */}
+        <div style={{ position: "absolute", inset: 0, display: "flex", pointerEvents: "none" }}>
+          <div style={{ flex: 1, background: hexToRgba(colors.t, 0.05) }} />
+          <div style={{ flex: 1, background: hexToRgba(colors.f, 0.05) }} />
+        </div>
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: "50%",
+            width: 2,
+            marginLeft: -1,
+            background: "rgba(255,255,255,0.06)",
+            pointerEvents: "none"
+          }}
+        />
+
+        {/* The two gates, descending together — rounded, glowing bars */}
+        <div
+          style={{
+            position: "absolute",
+            top: `calc(${gateY * 100}% - 52px)`,
+            left: 0,
+            right: 0,
+            height: 52,
+            display: "flex",
+            gap: 8,
+            padding: "0 8px",
+            boxSizing: "border-box"
+          }}
+        >
+          <Gate color={colors.t} />
+          <Gate color={colors.f} />
+        </div>
+
+        {/* Athenias — stacked vertically at the bottom of their lane */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: 14,
+            left: lane === 0 ? "25%" : "75%",
+            transform: "translateX(-50%)",
+            transition: "left 0.11s ease-out",
+            display: "flex",
+            flexDirection: "column-reverse",
+            alignItems: "center"
+          }}
+        >
+          {Array.from({ length: Math.min(angels, 6) }).map((_, i) => (
+            <div key={i} style={{ marginTop: i === 0 ? 0 : -8 }}>
+              <AthenaIcon size={52} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12 }}>
+        <button onMouseDown={() => setLane(0)} style={laneBtn}>
+          ◀ {leftKey.toUpperCase()}
+        </button>
+        <button onMouseDown={() => setLane(1)} style={laneBtn}>
+          {rightKey.toUpperCase()} ▶
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// A single glowing gate bar.
+function Gate({ color }: { color: string }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        borderRadius: 8,
+        background: `linear-gradient(180deg, ${color} 0%, ${hexToRgba(color, 0.75)} 100%)`,
+        border: "2px solid rgba(255,255,255,0.65)",
+        boxShadow: `0 0 18px ${hexToRgba(color, 0.6)}, inset 0 0 12px rgba(255,255,255,0.25)`,
+        boxSizing: "border-box"
+      }}
+    />
+  );
+}
+
+// The "you made it" mark: William's Athenia artwork, dropped in as
+// public/athenia.png. If the file isn't there the in-game vector stands in, so
+// the screen never shows a broken image.
+function VictoryMark() {
+  const [missing, setMissing] = useState(false);
+  if (missing) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <AthenaIcon size={170} />
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/athenia.png"
+      alt="Athenia"
+      onError={() => setMissing(true)}
+      style={{ display: "block", width: 170, height: "auto", margin: "0 auto" }}
+    />
+  );
+}
+
+// The Athenia statue as a low-poly winged bust: wings spread wide from behind
+// the shoulders, faceted torso, white carved face framed by faceted hair. The
+// palette runs warm on the left and cool on the right — same rainbow read as
+// the logo. Layers are drawn back-to-front (wings, torso, neck, hair, face).
+function AthenaIcon({ size = 34 }: { size?: number }) {
+  return (
+    <svg width={size} height={(size * 76) / 128} viewBox="0 0 128 76" aria-hidden="true">
+      <g stroke="#241c17" strokeWidth="0.75" strokeLinejoin="round">
+        {/* LEFT WING — six feathers fanning from behind the shoulder */}
+        <polygon points="58,44 3,5 6,16" fill="#e6a25c" />
+        <polygon points="58,44 6,16 11,26" fill="#e59a68" />
+        <polygon points="58,44 11,26 17,35" fill="#e39177" />
+        <polygon points="58,44 17,35 24,43" fill="#e18a88" />
+        <polygon points="58,44 24,43 31,50" fill="#e08a98" />
+        <polygon points="58,44 31,50 38,55" fill="#e29a92" />
+        {/* RIGHT WING — mirrored, cool half of the palette */}
+        <polygon points="70,44 125,5 122,16" fill="#9b9ad6" />
+        <polygon points="70,44 122,16 117,26" fill="#8fa2da" />
+        <polygon points="70,44 117,26 111,35" fill="#82abda" />
+        <polygon points="70,44 111,35 104,43" fill="#79b2d2" />
+        <polygon points="70,44 104,43 97,50" fill="#74b6c8" />
+        <polygon points="70,44 97,50 90,55" fill="#79b3bd" />
+
+        {/* TORSO — fan of facets, warm on the left, green/teal on the right */}
+        <polygon points="64,50 57,30 46,44" fill="#eaa95c" />
+        <polygon points="64,50 46,44 45,54" fill="#e7a75e" />
+        <polygon points="64,50 45,54 52,74" fill="#e3a662" />
+        <polygon points="64,50 52,74 76,74" fill="#d7ae6d" />
+        <polygon points="64,50 76,74 83,54" fill="#a8c092" />
+        <polygon points="64,50 83,54 82,44" fill="#83bfa8" />
+        <polygon points="64,50 82,44 71,30" fill="#79bbb2" />
+        <polygon points="64,50 71,30 57,30" fill="#ddb073" />
+        {/* inner star — lighter tints, keeps the chest from reading flat */}
+        <g strokeWidth="0.5">
+          <polygon points="64,50 56,45 64,40" fill="#f0bb72" />
+          <polygon points="64,50 64,40 72,45" fill="#96c5ab" />
+          <polygon points="64,50 72,45 72,56" fill="#86c0b4" />
+          <polygon points="64,50 72,56 64,61" fill="#b6c397" />
+          <polygon points="64,50 64,61 56,56" fill="#eeb96f" />
+          <polygon points="64,50 56,56 56,45" fill="#f2c07b" />
+        </g>
+
+        {/* NECK — warm on the left, cool on the right */}
+        <polygon points="58,21 64,21 64,33 55,33" fill="#f0c078" />
+        <polygon points="64,21 70,21 73,33 64,33" fill="#6cb5b8" />
+
+        {/* HAIR — framing facets, warm left / cool right, olive crown */}
+        <polygon points="64,4 57,6 52,13 60,11" fill="#e0a05a" />
+        <polygon points="52,13 52,26 57,30 60,20 60,11" fill="#dd8d84" />
+        <polygon points="64,4 71,6 76,13 68,11" fill="#6fb4bc" />
+        <polygon points="76,13 76,26 71,30 68,20 68,11" fill="#9a97cf" />
+        <polygon points="64,4 60,11 64,9 68,11" fill="#93b078" />
+
+        {/* FACE — white marble, split down the middle */}
+        <polygon points="64,7 59,11 59,20 64,27" fill="#ffffff" />
+        <polygon points="64,7 69,11 69,20 64,27" fill="#f2f2f2" />
+        {/* carved features — faint at small sizes, detail when scaled up */}
+        <g fill="none" strokeWidth="0.45" strokeLinecap="round">
+          <path d="M60.6,15 L63,14" />
+          <path d="M65,14 L67.4,15" />
+          <path d="M64,13 L64,19 M62.2,20 L64,21 L65.8,20" />
+          <path d="M62,23 L64,22.6 L66,23" />
+        </g>
+      </g>
+    </svg>
+  );
+}
+
+// #rgb / #rrggbb -> rgba() with the given alpha.
+function hexToRgba(hex: string, alpha: number): string {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+const laneBtn: React.CSSProperties = {
+  padding: "10px 24px",
+  border: "1px solid #888",
+  borderRadius: "var(--btn-radius, 3px)",
+  background: "transparent",
+  color: "inherit",
+  fontSize: 15,
+  cursor: "pointer"
+};
+
+function KeyField({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label style={{ display: "inline-flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
+      <span style={{ opacity: 0.7 }}>{label}</span>
+      <input
+        value={value}
+        maxLength={1}
+        onChange={(e) => onChange((e.target.value || "a").toLowerCase())}
+        style={{
+          width: 54,
+          height: 36,
+          textAlign: "center",
+          textTransform: "uppercase",
+          fontWeight: "bold",
+          background: "transparent",
+          color: "inherit",
+          border: "1px solid #888",
+          borderRadius: "var(--btn-radius, 3px)",
+          outline: "none"
+        }}
+      />
+    </label>
+  );
+}

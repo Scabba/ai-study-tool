@@ -145,7 +145,7 @@ export default function AiAssistant() {
             background: "var(--background)",
             color: "var(--foreground)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 1500,
             overflow: "hidden"
@@ -191,7 +191,7 @@ export default function AiAssistant() {
                   alignSelf: m.role === "user" ? "flex-end" : "flex-start",
                   maxWidth: "85%",
                   padding: "8px 12px",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 14,
                   lineHeight: 1.5,
                   whiteSpace: "pre-wrap",
@@ -236,7 +236,7 @@ export default function AiAssistant() {
                 background: "transparent",
                 color: "inherit",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 outline: "none"
               }}
             />
@@ -252,7 +252,7 @@ export default function AiAssistant() {
                 alignItems: "center",
                 justifyContent: "center",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 background: "transparent",
                 color: busy || !input.trim() ? "#666" : "#cbd5e1",
                 cursor: busy || !input.trim() ? "default" : "pointer"

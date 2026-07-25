@@ -1,12 +1,16 @@
 // Lightweight usage stats. Kept in localStorage always, and (when signed in)
 // mirrored to the user's account so they follow them across devices.
 
-// One answered question inside a quiz (kept so folders can rechallenge misses).
+// One answered question inside a quiz (kept so folders can rechallenge misses,
+// and so Quiz History can replay it).
 export type QuizItem = {
   question: string;
-  options?: { A: string; B: string; C: string; D: string }; // absent for True/False
-  correct: string; // correct answer (letter, or "True"/"False")
-  chosen: string; // what the user picked
+  type?: "mc" | "tf" | "written"; // absent = multiple-choice (back-compat)
+  options?: { A: string; B: string; C: string; D: string }; // absent for TF/written
+  correct: string; // MC letter, "True"/"False", or (written) the model answer
+  chosen: string; // what the user picked / typed
+  verdict?: "correct" | "partial" | "incorrect"; // written only: the AI grade
+  feedback?: string; // written only: the AI's short explanation
 };
 
 // One completed quiz, for the Quiz History page.
@@ -124,8 +128,10 @@ function prevMilestone(current: number): number {
 
 // Settle the streak against the clock. A banked freeze is spent automatically
 // the moment a decay would happen: the streak is kept and the 48h countdown
-// restarts from that point. Anything still overdue after that decays normally
-// (-1, then -1 per further 24h). Pure — callers persist the result on submit.
+// restarts from that point. The streak then loses 1 every further 48h without
+// a quiz, and `decayAt` always points at the NEXT decay — so the countdown
+// resets to 48h after each drop and counts down toward the next, rather than
+// sticking at "0m". Pure — callers persist the result on submit.
 function settleStreak(
   st: Streak,
   now: number
@@ -142,7 +148,12 @@ function settleStreak(
   }
   let current = st.current;
   if (now >= decayAt) {
-    current = Math.max(0, current - (Math.floor((now - decayAt) / DAY_MS) + 1));
+    // How many full 48h decay windows have elapsed since the deadline (the
+    // deadline itself is the first). Drop that many, and advance the deadline
+    // past them so it counts down toward the next one.
+    const drops = Math.floor((now - decayAt) / DECAY_AFTER_MS) + 1;
+    current = Math.max(0, current - drops);
+    decayAt += drops * DECAY_AFTER_MS;
   }
   return { current, decayAt, freezeUsed, hasFreeze: hasFreeze && !freezeUsed };
 }
@@ -219,12 +230,21 @@ function sanitizeItems(v: unknown): QuizItem[] {
     .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
     .map((it) => ({
       question: typeof it.question === "string" ? it.question : "",
+      type:
+        it.type === "tf" || it.type === "written" || it.type === "mc"
+          ? (it.type as "mc" | "tf" | "written")
+          : undefined,
       options:
         it.options && typeof it.options === "object"
           ? (it.options as { A: string; B: string; C: string; D: string })
           : undefined,
       correct: typeof it.correct === "string" ? it.correct : "",
-      chosen: typeof it.chosen === "string" ? it.chosen : ""
+      chosen: typeof it.chosen === "string" ? it.chosen : "",
+      verdict:
+        it.verdict === "correct" || it.verdict === "partial" || it.verdict === "incorrect"
+          ? (it.verdict as "correct" | "partial" | "incorrect")
+          : undefined,
+      feedback: typeof it.feedback === "string" ? it.feedback : undefined
     }));
 }
 
@@ -366,8 +386,11 @@ export function recordHint() {
   save(s);
 }
 
-// Roll the streak forward for a submitted quiz (mutates `st`).
-function advanceStreak(st: Streak) {
+// Roll the streak forward for a submitted quiz (mutates `st`). Returns the
+// milestone day just reached, or 0 — the caller uses it to claim the Pro days
+// from the server, which is what actually grants them. `premiumDays` below is
+// only a local tally for display; the server is the authority (lib/proGrants).
+function advanceStreak(st: Streak): number {
   const now = Date.now();
   const today = estDayKey(now);
 
@@ -385,8 +408,9 @@ function advanceStreak(st: Streak) {
     if (reward > 0 && st.current > st.rewarded) {
       st.premiumDays += reward;
       st.rewarded = st.current;
+      return st.current;
     }
-    return;
+    return 0;
   }
 
   // Same day: further quizzes grind toward a freeze. Only one freeze exists at
@@ -399,21 +423,24 @@ function advanceStreak(st: Streak) {
       st.freezeProgress = 0;
     }
   }
+  return 0; // freezes aren't milestones
 }
 
 // A quiz was submitted/graded at `gradePercent`, on grade level `grade`, with an
 // estimated `subject` (or null if it couldn't be guessed).
+// Returns the streak milestone just reached (0 if none), so the caller can ask
+// the server to grant the Pro days for it.
 export function recordCompletion(
   gradePercent: number,
   grade: string,
   subject: string | null,
   items: QuizItem[]
-) {
+): number {
   const s = loadStats();
   s.quizzesCompleted += 1;
   s.gradeSum += gradePercent;
   s.gradeCount += 1;
-  advanceStreak(s.streak);
+  const milestoneReached = advanceStreak(s.streak);
   s.difficultyCounts[grade] = (s.difficultyCounts[grade] ?? 0) + 1;
   if (subject) s.subjectCounts[subject] = (s.subjectCounts[subject] ?? 0) + 1;
   const record: QuizRecord = {
@@ -428,6 +455,7 @@ export function recordCompletion(
   };
   s.history = [record, ...s.history].slice(0, HISTORY_CAP);
   save(s);
+  return milestoneReached;
 }
 
 // Rename a quiz in the history.
@@ -469,6 +497,29 @@ export function renameFolder(id: string, name: string) {
   const f = s.folders.find((x) => x.id === id);
   if (!f) return;
   f.name = name.trim() || f.name;
+  save(s);
+}
+
+// Delete a folder. The quizzes it held are untouched — a folder is just a tag,
+// so removing it un-files those quizzes rather than deleting them.
+export function deleteFolder(id: string) {
+  const s = loadStats();
+  s.folders = s.folders.filter((f) => f.id !== id);
+  save(s);
+}
+
+// Persist a new folder order (from drag-to-reorder on the history page). Any
+// folder id not in the list is appended, so a stale list can't drop folders.
+export function reorderFolders(orderedIds: string[]) {
+  const s = loadStats();
+  const byId = new Map(s.folders.map((f) => [f.id, f]));
+  const next: Folder[] = [];
+  for (const id of orderedIds) {
+    const f = byId.get(id);
+    if (f) next.push(f);
+  }
+  for (const f of s.folders) if (!orderedIds.includes(f.id)) next.push(f);
+  s.folders = next;
   save(s);
 }
 

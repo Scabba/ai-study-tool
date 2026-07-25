@@ -8,6 +8,7 @@ export type Settings = {
   instantFeedback: boolean;
   amount: number;
   tfAmount: number;
+  writtenAmount: number;
 };
 
 type Client = ReturnType<typeof createClient>;
@@ -25,7 +26,8 @@ export function sanitize(raw: unknown): Settings | null {
         : null,
     instantFeedback: typeof s.instantFeedback === "boolean" ? s.instantFeedback : false,
     amount: typeof s.amount === "number" ? s.amount : 5,
-    tfAmount: typeof s.tfAmount === "number" ? s.tfAmount : 0
+    tfAmount: typeof s.tfAmount === "number" ? s.tfAmount : 0,
+    writtenAmount: typeof s.writtenAmount === "number" ? s.writtenAmount : 0
   };
   return out;
 }

@@ -54,7 +54,7 @@ export default function PrivacyPage() {
           marginTop: 24,
           padding: 20,
           border: "1px solid #888",
-          borderRadius: 3
+          borderRadius: "var(--btn-radius, 3px)"
         }}
       >
         <p style={{ ...p, margin: 0 }}>

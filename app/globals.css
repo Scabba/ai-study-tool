@@ -3,6 +3,18 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Customization defaults (overridden by applyTheme from /customize). */
+  --btn-radius: 3px;
+  --quiz-radius: 3px;
+  --quiz-gap: 10px;
+}
+
+/* Squared surfaces (buttons, folder chips, quiz cards, panels, inputs) read
+   --btn-radius through their inline styles, so the shape customization reaches
+   all of them. This is only a gentle default for buttons that set no radius of
+   their own; circular icon buttons keep their inline 50% and stay round. */
+button {
+  border-radius: var(--btn-radius);
 }
 
 @theme inline {

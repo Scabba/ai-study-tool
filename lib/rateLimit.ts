@@ -1,4 +1,5 @@
 import { supabaseAdmin as admin } from "@/lib/supabaseAdmin";
+import { PRO_AUDIO_HOURS_PER_WEEK } from "@/lib/pricing";
 
 // Server-only daily rate limiting, backed by the `rate_limits` table.
 //
@@ -20,7 +21,8 @@ export const ANON_LIMITS = {
   generate: 3, // full quizzes (text only — other sources need an account)
   rechallenge: 10, // extension rounds, ~3 quizzes' worth
   hint: 30, // roughly one per question across those quizzes
-  assistant: 10 // chat messages to the AI assistant
+  assistant: 10, // chat messages to the AI assistant
+  grade: 30 // written-answer gradings, roughly one per question
 };
 
 // The caller's IP as Vercel sees it. x-forwarded-for is a comma-separated chain
@@ -82,28 +84,39 @@ export async function bumpDaily(
 
 // --- Pro audio/video meter ---------------------------------------------------
 //
-// Pro includes 15 hours of transcription a month. This is metered in SECONDS in
-// the same `rate_limits` table (count holds seconds, not uses), under a bucket
-// keyed by calendar month.
+// Pro includes 4 hours of transcription a week, resetting each Friday. Metered
+// in SECONDS in the same `rate_limits` table (count holds seconds, not uses),
+// under a bucket keyed by the Friday that started the current week.
 //
 // Two things worth knowing about this meter:
 //
-//   * It resets on the 1st (UTC), not on the subscriber's billing date. Billing
-//     -date reset would need the period start from Stripe; calendar month is the
-//     simpler thing that's honest to explain on the pricing card.
+//   * The week boundary is midnight EASTERN, matching the streak's day boundary
+//     (lib/stats.ts). UTC would roll over at 8pm ET Thursday, so a user told
+//     "resets Friday" would see it reset on Thursday evening.
 //   * A file's length is only known once AssemblyAI has transcribed it, so the
 //     check is "block if already over" and the charge lands afterwards. Someone
-//     at 14h50m can start a 2-hour file and land at 16h50m. They can't start
-//     another one. Eating one overage beats rejecting a paid upload for being
-//     too long.
-export const PRO_AUDIO_SECONDS_PER_MONTH = 15 * 60 * 60;
+//     at 3h50m can start a 2-hour file and land at 5h50m. They can't start
+//     another one that week. Eating one overage beats rejecting a paid upload
+//     for being too long.
+export const PRO_AUDIO_SECONDS_PER_WEEK = PRO_AUDIO_HOURS_PER_WEEK * 60 * 60;
 
-function utcMonth(): string {
-  return new Date().toISOString().slice(0, 7); // YYYY-MM
+// The Friday (YYYY-MM-DD) that began the current week, in Eastern time.
+function etWeekStart(now: number = Date.now()): string {
+  const etDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(now)); // YYYY-MM-DD in ET
+  // Anchor at noon UTC so a DST shift can't nudge this onto the wrong weekday.
+  const d = new Date(`${etDate}T12:00:00Z`);
+  const daysSinceFriday = (d.getUTCDay() - 5 + 7) % 7; // getUTCDay: Fri = 5
+  d.setUTCDate(d.getUTCDate() - daysSinceFriday);
+  return d.toISOString().slice(0, 10);
 }
 
 function audioBucket(userId: string): string {
-  return `audio:u:${userId}:${utcMonth()}`;
+  return `audio:u:${userId}:w${etWeekStart()}`;
 }
 
 // Seconds of audio this user has burned this month, or null if the meter can't
@@ -141,9 +154,9 @@ export async function addAudioSeconds(userId: string, seconds: number): Promise<
       {
         bucket: audioBucket(userId),
         count: current + Math.round(seconds),
-        // Keep a finished month around a while for support questions, then let
+        // Keep a finished week around a while for support questions, then let
         // whatever prunes this table reclaim it.
-        expires_at: new Date(Date.now() + 70 * 86_400_000).toISOString()
+        expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString()
       },
       { onConflict: "bucket" }
     );

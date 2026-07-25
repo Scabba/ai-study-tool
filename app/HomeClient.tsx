@@ -13,6 +13,19 @@ import WhatsNew from "./WhatsNew";
 import AuthButton from "./components/AuthButton";
 import PricingModal from "./components/PricingModal";
 import { createClient } from "@/lib/supabase/client";
+import { btnColors } from "@/lib/theme";
+import {
+  PAGES,
+  PAGE_BLOCKS,
+  DEFAULT_BLOCK_ORDER,
+  applyLayout,
+  loadLayout,
+  pageLayout,
+  saveLayout,
+  type LayoutMap,
+  type PageId,
+  type PageLayout
+} from "@/lib/layout";
 import { fetchSettings, saveSettings, type Settings } from "@/lib/userSettings";
 import {
   loadStats,
@@ -36,15 +49,6 @@ import {
 } from "@/lib/stats";
 import { fetchStats, saveStats } from "@/lib/userStats";
 import { classifySubject } from "@/lib/subjects";
-import {
-  FONTS,
-  PALETTES,
-  DEFAULT_THEME,
-  applyTheme,
-  loadTheme,
-  saveTheme,
-  type ThemeChoice
-} from "@/lib/theme";
 
 // A multiple-choice question coming back from the server
 type MCQuestion = {
@@ -65,7 +69,35 @@ type TFQuestion = {
   round?: number; // 0 = original quiz, 1+ = rechallenge extension rounds
 };
 
-type Question = MCQuestion | TFQuestion;
+// A written (short-answer) question — the student types a response that the AI
+// grades for meaning. `answer` is the model answer.
+type WrittenQuestion = {
+  type: "written";
+  question: string;
+  answer: string;
+  difficulty: string;
+  round?: number;
+};
+
+type Question = MCQuestion | TFQuestion | WrittenQuestion;
+
+// The AI's grade for one written answer (from /api/grade).
+type WrittenVerdict = "correct" | "partial" | "incorrect";
+type WrittenResult = {
+  status: "grading" | "done";
+  verdict?: WrittenVerdict;
+  feedback?: string;
+  modelAnswer?: string;
+  missingConcepts?: string[];
+  suggestion?: string;
+};
+
+// Points a written verdict is worth (partial = half credit).
+const WRITTEN_SCORE: Record<WrittenVerdict, number> = {
+  correct: 1,
+  partial: 0.5,
+  incorrect: 0
+};
 
 type Mode = "text" | "image" | "audio";
 
@@ -82,6 +114,8 @@ type QuizState = {
   submittedRounds: number;
   // Per-question hint state: "loading" while it's being generated, then the text.
   hints: Record<number, { status: "loading" | "done"; text?: string }>;
+  // Per-question grade for written answers (keyed by question index).
+  written: Record<number, WrittenResult>;
   loading: boolean; // a generation is streaming into this tab
   rechallengeLoading: boolean; // a rechallenge round is streaming into this tab
 };
@@ -91,6 +125,7 @@ const EMPTY_QUIZ: QuizState = {
   answers: {},
   submittedRounds: 0,
   hints: {},
+  written: {},
   loading: false,
   rechallengeLoading: false
 };
@@ -109,6 +144,14 @@ const MAX_IMAGES = 5;
 // not localStorage: it should outlive a navigation, not a whole browser session.
 const QUIZ_SESSION_KEY = "atheniaActiveQuiz";
 
+// Arrange picker: pages that are their own route, so picking one navigates
+// there. Everything else (the quiz tabs, the settings panel) opens in place.
+const ARRANGE_HREFS: Partial<Record<PageId, string>> = {
+  games: "/games",
+  history: "/history",
+  customize: "/customize"
+};
+
 // Parks the restart button just off the right edge of a Generate button, out of
 // the flow so showing it never shifts the (centered) Generate button.
 const restartSlot: React.CSSProperties = {
@@ -123,8 +166,15 @@ const restartSlot: React.CSSProperties = {
 const DIFFICULTIES = ["Middle School", "High School", "University"];
 
 // True on narrow (phone) screens. Uses matchMedia so it updates live when the
-// window is resized or rotated, and renders as desktop-first on the server.
-function useIsMobile(breakpoint = 640) {
+// window is resized or rotated.
+//
+// `serverGuess` is what the server rendered, taken from the request's
+// user-agent. It matters: this value is also what React uses for the hydration
+// render, so if it disagrees with the real screen the page paints the wrong
+// layout and visibly snaps into place a moment later. Guessing from the
+// user-agent isn't perfect, but it's right for real phones, which is where the
+// snap was ugly.
+function useIsMobile(serverGuess: boolean, breakpoint = 640) {
   return useSyncExternalStore(
     (onChange) => {
       const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
@@ -132,7 +182,7 @@ function useIsMobile(breakpoint = 640) {
       return () => mq.removeEventListener("change", onChange);
     },
     () => window.matchMedia(`(max-width: ${breakpoint}px)`).matches,
-    () => false // server / first paint: assume desktop
+    () => serverGuess
   );
 }
 
@@ -187,6 +237,14 @@ const SUBMIT_GREEN = "#3f9169";
 // Submit / grade box.
 const RECHALLENGE_YELLOW = "#d9b45a";
 const RECHALLENGE_BTN = "#c79a34";
+// Desktop spacing around the streak. It sits just under the title (12, which
+// reads as 2 because the title is nudged down 10px by a transform), and the
+// rest of the gap goes below it. One pair of numbers for every tab, so the
+// text box's top edge lines up with the image and audio boxes — they used to
+// differ by 18 because the text page carried a 66px top margin and the others 48.
+const DESKTOP_STREAK_ABOVE = 12;
+const DESKTOP_STREAK_BELOW = 68;
+
 // Hint theme: the same yellow used for the answer-selection dot, so the
 // lightbulb and hint text read as one "yellow" accent.
 const HINT_YELLOW = "#eab308";
@@ -232,10 +290,12 @@ export type InitialAuth = {
 
 export default function Home({
   initialAuth,
-  initialIsPro
+  initialIsPro,
+  initialIsMobile
 }: {
   initialAuth: InitialAuth;
   initialIsPro: boolean;
+  initialIsMobile: boolean;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<Mode>("text"); // which page tab is active
@@ -273,12 +333,12 @@ export default function Home({
   const [authAvatar, setAuthAvatar] = useState<string | null>(initialAuth?.avatar ?? null); // signed-in user's photo, if any
   const [authUserId, setAuthUserId] = useState<string | null>(initialAuth?.id ?? null); // signed-in user's id (for account-wide settings)
   const [authClient] = useState(() => (SUPABASE_CONFIGURED ? createClient() : null));
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile(initialIsMobile);
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null); // image shown fullscreen
   const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null); // video shown fullscreen
   // One quiz per tab; the active tab's is what the page renders.
   const [quizzes, setQuizzes] = useState<Record<Mode, QuizState>>(emptyQuizzes);
-  const { questions, answers, submittedRounds, hints, loading, rechallengeLoading } =
+  const { questions, answers, submittedRounds, hints, written, loading, rechallengeLoading } =
     quizzes[mode];
 
   // Patch one tab's quiz. Callers pass the tab explicitly, so a generation that
@@ -296,14 +356,105 @@ export default function Home({
   const [genError, setGenError] = useState<string | null>(null); // shown when trying to generate without required settings
   const [amount, setAmount] = useState(5); // how many multiple-choice questions to generate
   const [tfAmount, setTfAmount] = useState(0); // how many true/false questions (0 = none)
+  const [writtenAmount, setWrittenAmount] = useState(0); // how many written-answer questions (0 = none)
   const [showNotice, setShowNotice] = useState(false); // the "?" pre-release notice
   const [showSettings, setShowSettings] = useState(false); // the cog settings panel
   const [showStats, setShowStats] = useState(false); // the Stats panel
   const [statsData, setStatsData] = useState<Stats | null>(null); // snapshot shown in the Stats panel
   const [showPricing, setShowPricing] = useState(false); // the Athenia Pro upgrade screen
-  const [showCustomize, setShowCustomize] = useState(false); // the palette / customization panel
-  const [theme, setTheme] = useState<ThemeChoice>(DEFAULT_THEME); // font + palette choice
+
+  // --- Arrange mode (the move button, top-right) ----------------------------
+  // Read lazily on the client. Nothing in the render output depends on this —
+  // the block order/visibility goes out as CSS variables (applyLayout below),
+  // so the server HTML and the first client render still match exactly.
+  const [layoutMap, setLayoutMap] = useState<LayoutMap>(() =>
+    typeof window === "undefined" ? {} : loadLayout()
+  );
+  const [arrangeOpen, setArrangeOpen] = useState(false); // the page picker
+  const [arrangePage, setArrangePage] = useState<PageId | null>(null); // page being edited
+  // The block being dragged in the arrange panel, and the slot it would land in.
+  // The list does NOT reshuffle mid-drag (that fights the drag ghost) — an
+  // indicator marks the slot and the move happens on drop, same as the folder bar.
+  const [dragBlock, setDragBlock] = useState<string | null>(null);
+  const [blockDropIndex, setBlockDropIndex] = useState<number | null>(null);
+
+  // Publish the active tab's arrangement as CSS variables.
+  useEffect(() => {
+    applyLayout(layoutMap, mode);
+  }, [layoutMap, mode]);
+
+  // Each block reads its own order/display var, falling back to the position it
+  // has always occupied — so an unarranged page needs no JS at all to look right.
+  const blockStyle = (id: string, display: string): React.CSSProperties => ({
+    order: `var(--blk-${id}-order, ${DEFAULT_BLOCK_ORDER[id] ?? 0})`,
+    display: `var(--blk-${id}-display, ${display})`
+  });
+
+  function writeLayout(page: PageId, next: PageLayout) {
+    setLayoutMap((prev) => {
+      const merged = { ...prev, [page]: next };
+      saveLayout(merged);
+      return merged;
+    });
+  }
+
+  // Reset = forget this page's entry entirely, so it falls back to the defaults.
+  function resetPageLayout(page: PageId) {
+    setLayoutMap((prev) => {
+      const next = { ...prev };
+      delete next[page];
+      saveLayout(next);
+      return next;
+    });
+  }
+
+  function toggleBlock(page: PageId, id: string) {
+    const cur = pageLayout(layoutMap, page);
+    writeLayout(page, {
+      ...cur,
+      hidden: cur.hidden.includes(id)
+        ? cur.hidden.filter((h) => h !== id)
+        : [...cur.hidden, id]
+    });
+  }
+
+  // Show the page being arranged. The quiz tabs swap the active mode and the
+  // Settings page is the cog panel — both live on this screen, so the arrange
+  // panel stays open beside them. (Pages that are their own route are linked
+  // instead; see ARRANGE_HREFS.)
+  function openArrangePage(id: PageId) {
+    setArrangePage(id);
+    if (id === "text" || id === "image" || id === "audio") switchMode(id);
+    if (id === "settings") setShowSettings(true);
+  }
+
+  // While dragging over a row, mark whether the block would land above or below
+  // it, by which half of the row the cursor is on.
+  function markBlockDrop(index: number, e: React.DragEvent) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const idx = e.clientY > rect.top + rect.height / 2 ? index + 1 : index;
+    if (blockDropIndex !== idx) setBlockDropIndex(idx);
+  }
+
+  // Apply the move once the drag ends.
+  function commitBlockOrder(page: PageId) {
+    const cur = pageLayout(layoutMap, page);
+    const from = cur.order.indexOf(dragBlock ?? "");
+    let to = blockDropIndex;
+    setDragBlock(null);
+    setBlockDropIndex(null);
+    if (from === -1 || to === null) return;
+    if (to > from) to -= 1; // pulling `from` out shifts everything after it up
+    if (to === from) return; // dropped back where it started
+    const order = [...cur.order];
+    const [moved] = order.splice(from, 1);
+    order.splice(to, 0, moved);
+    writeLayout(page, { ...cur, order });
+  }
   const [isPro, setIsPro] = useState(initialIsPro); // does this account have an active subscription?
+  // When streak-earned Pro runs out (ISO string), or null if none is banked.
+  // The server owns this — see lib/proGrants.ts — the client only displays it.
+  const [proUntil, setProUntil] = useState<string | null>(null);
   const [streak, setStreak] = useState<Streak | null>(null); // daily streak shown under the title
   const [showStreakInfo, setShowStreakInfo] = useState(false); // the streak's "i" reward popover
   const [dragging, setDragging] = useState(false); // a file is being dragged over the text box
@@ -324,6 +475,7 @@ export default function Home({
   const settingsButtonRef = useRef<HTMLButtonElement>(null); // the cog button
   const mobileMenuRef = useRef<HTMLDivElement>(null); // the mobile hamburger + its dropdown
   const accountMenuRef = useRef<HTMLDivElement>(null); // the mobile account button + its dropdown
+  const arrangeRef = useRef<HTMLDivElement>(null); // the arrange button + its panel
   const skipFirstSave = useRef(true); // don't save settings on the very first render
   const cloudReady = useRef(false); // true once we've loaded (or migrated) this user's cloud settings
   const cloudSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // debounces cloud writes
@@ -334,7 +486,8 @@ export default function Home({
     gradeYear: null,
     instantFeedback: false,
     amount: 5,
-    tfAmount: 0
+    tfAmount: 0,
+    writtenAmount: 0
   }); // always holds the current settings (used to seed a brand-new account)
   // One in-flight generation per tab, so generating on Image can't cancel Text's.
   const genAbortRef = useRef<Record<Mode, AbortController | null>>({
@@ -354,6 +507,19 @@ export default function Home({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [mobileMenuOpen]);
+
+  // Close the arrange panel when you click outside it
+  useEffect(() => {
+    if (!arrangeOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (!arrangeRef.current?.contains(e.target as Node)) {
+        setArrangeOpen(false);
+        setArrangePage(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [arrangeOpen]);
 
   // Close the account dropdown when you tap outside it
   useEffect(() => {
@@ -417,7 +583,10 @@ export default function Home({
       const target = e.target as Node;
       if (
         settingsRef.current?.contains(target) ||
-        settingsButtonRef.current?.contains(target)
+        settingsButtonRef.current?.contains(target) ||
+        // Arrange can open this panel, so the two have to coexist — clicking
+        // around in the arrange panel mustn't close what it just opened.
+        arrangeRef.current?.contains(target)
       ) {
         return;
       }
@@ -451,6 +620,7 @@ export default function Home({
       if (typeof s.instantFeedback === "boolean") setInstantFeedback(s.instantFeedback);
       if (typeof s.amount === "number") setAmount(s.amount);
       if (typeof s.tfAmount === "number") setTfAmount(s.tfAmount);
+      if (typeof s.writtenAmount === "number") setWrittenAmount(s.writtenAmount);
       /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
       // ignore bad/missing saved data
@@ -462,7 +632,7 @@ export default function Home({
   // users also get the change mirrored to their account so it follows them across
   // devices; signed-out users just use localStorage as before.
   useEffect(() => {
-    const current = { difficulty, gradeYear, instantFeedback, amount, tfAmount };
+    const current = { difficulty, gradeYear, instantFeedback, amount, tfAmount, writtenAmount };
     latestSettings.current = current;
     if (skipFirstSave.current) {
       skipFirstSave.current = false;
@@ -482,7 +652,7 @@ export default function Home({
         saveSettings(authClient, authUserId, current);
       }, 500);
     }
-  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount, authClient, authUserId]);
+  }, [difficulty, gradeYear, instantFeedback, amount, tfAmount, writtenAmount, authClient, authUserId]);
 
   // When a user signs in, load their account-wide settings — the cloud copy wins
   // across devices. If they have no saved row yet, seed it from whatever's set
@@ -500,6 +670,7 @@ export default function Home({
         setInstantFeedback(cloud.instantFeedback);
         setAmount(cloud.amount);
         setTfAmount(cloud.tfAmount);
+        setWrittenAmount(cloud.writtenAmount);
       } else {
         await saveSettings(authClient, authUserId, latestSettings.current);
       }
@@ -582,12 +753,30 @@ export default function Home({
     };
   }, [authClient, authUserId]);
 
+  // How much streak-earned Pro is left. Separate from the subscription check
+  // above: a user can be Pro either by paying or by keeping a streak.
+  // Re-runs on sign-in/out; the route answers null for a signed-out caller, so
+  // the reset falls out of the response rather than a synchronous setState.
+  useEffect(() => {
+    let active = true;
+    fetch("/api/streak/claim")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (active) setProUntil(d?.proUntil ?? null);
+      })
+      .catch(() => {
+        // Countdown just doesn't show — not worth surfacing.
+      });
+    return () => {
+      active = false;
+    };
+  }, [authUserId]);
+
   // Streak lives in localStorage, so it can only be read once we're in the
   // browser — this one-time setState is intentional.
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     setStreak(loadStats().streak);
-    setTheme(loadTheme()); // panel state only; ThemeLoader already applied it
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
@@ -624,6 +813,11 @@ export default function Home({
               // Loading flags are dropped too: those streams didn't survive.
               hints: Object.fromEntries(
                 Object.entries(q.hints ?? {}).filter(([, h]) => h?.status === "done")
+              ),
+              // Keep written grades that finished; drop any mid-grade (that
+              // fetch didn't survive the navigation, same as loading hints).
+              written: Object.fromEntries(
+                Object.entries(q.written ?? {}).filter(([, w]) => w?.status === "done")
               )
             };
           }
@@ -711,31 +905,56 @@ export default function Home({
       try {
         const items = JSON.parse(raw) as {
           question: string;
+          type?: "mc" | "tf" | "written";
           options?: { A: string; B: string; C: string; D: string };
           correct: string;
           chosen: string;
+          verdict?: WrittenVerdict;
+          feedback?: string;
         }[];
-        const qs: Question[] = items.map((it) =>
-          it.options
-            ? {
-                question: it.question,
-                options: it.options,
-                answer: it.correct,
-                difficulty: "medium",
-                round: 0
-              }
-            : {
-                type: "tf",
-                question: it.question,
-                answer: it.correct === "True" ? "True" : "False",
-                difficulty: "medium",
-                round: 0
-              }
-        );
+        // Older saved quizzes have no `type`: infer it (options -> MC, else TF)
+        // for back-compat. Written items always carry type + verdict.
+        const qs: Question[] = items.map((it) => {
+          if (it.type === "written") {
+            return {
+              type: "written",
+              question: it.question,
+              answer: it.correct, // the model answer
+              difficulty: "medium",
+              round: 0
+            } satisfies WrittenQuestion;
+          }
+          if (it.options && it.type !== "tf") {
+            return {
+              question: it.question,
+              options: it.options,
+              answer: it.correct,
+              difficulty: "medium",
+              round: 0
+            } satisfies MCQuestion;
+          }
+          return {
+            type: "tf",
+            question: it.question,
+            answer: it.correct === "True" ? "True" : "False",
+            difficulty: "medium",
+            round: 0
+          } satisfies TFQuestion;
+        });
         if (qs.length) {
           const chosen: Record<number, string> = {};
+          const writtenReview: Record<number, WrittenResult> = {};
           items.forEach((it, i) => {
             if (it.chosen) chosen[i] = it.chosen;
+            // Replay the written grade so review shows the verdict + feedback.
+            if (it.type === "written" && it.verdict) {
+              writtenReview[i] = {
+                status: "done",
+                verdict: it.verdict,
+                feedback: it.feedback,
+                modelAnswer: it.correct
+              };
+            }
           });
           reviewScrollRef.current = true; // jump to the quiz once it renders
           // Lands on the Text tab — that's the tab the app opens on.
@@ -743,6 +962,7 @@ export default function Home({
             ...EMPTY_QUIZ,
             questions: qs,
             answers: chosen,
+            written: writtenReview,
             submittedRounds: 1 // round 0 is already graded → reveal right/wrong
           });
         }
@@ -774,9 +994,12 @@ export default function Home({
     // Grade the current (not-yet-graded) round only. Find the first UNANSWERED
     // question within that round.
     const activeRound = submittedRounds;
-    const missing = questions.findIndex(
-      (q, i) => (q.round ?? 0) === activeRound && !answers[i]
-    );
+    // A written question counts as answered only once it's been graded (its own
+    // Submit Answer button); MC/TF just need a selection.
+    const missing = questions.findIndex((q, i) => {
+      if ((q.round ?? 0) !== activeRound) return false;
+      return q.type === "written" ? written[i]?.status !== "done" : !answers[i];
+    });
 
     if (missing !== -1) {
       // Scroll that question to the middle of the screen...
@@ -798,17 +1021,45 @@ export default function Home({
         .filter(({ q }) => (q.round ?? 0) === 0)
         .map(({ q, i }) => ({
           question: q.question,
+          type: q.type === "tf" ? ("tf" as const) : q.type === "written" ? ("written" as const) : ("mc" as const),
           options: "options" in q ? q.options : undefined,
           correct: q.answer,
-          chosen: answers[i] ?? ""
+          chosen: answers[i] ?? "",
+          // A written question carries its AI grade so history can replay it.
+          verdict: q.type === "written" ? written[i]?.verdict : undefined,
+          feedback: q.type === "written" ? written[i]?.feedback : undefined
         }));
-      const correct = items.filter((it) => it.chosen === it.correct).length;
-      const pct = items.length ? Math.round((correct / items.length) * 100) : 0;
+      // Score with partial credit: written questions are worth their verdict
+      // (correct 1, partial 0.5, incorrect 0); MC/TF are 1 for a match.
+      const scored = items.reduce((sum, it) => {
+        if (it.verdict) return sum + WRITTEN_SCORE[it.verdict];
+        return sum + (it.chosen === it.correct ? 1 : 0);
+      }, 0);
+      const pct = items.length ? Math.round((scored / items.length) * 100) : 0;
       const quizText = items
         .map((it) => `${it.question} ${it.options ? Object.values(it.options).join(" ") : ""}`)
         .join(" ");
-      recordCompletion(pct, gradeLabel(), classifySubject(quizText), items);
+      const milestone = recordCompletion(pct, gradeLabel(), classifySubject(quizText), items);
       setStreak(loadStats().streak); // submitting completes the day
+      // Hitting a milestone earns Pro days, but only the server can grant them
+      // — the streak itself lives in localStorage, so a client-side award would
+      // be free Pro for anyone with devtools. Fire-and-forget: if it fails the
+      // milestone stays unclaimed locally and the next submit retries it.
+      if (milestone > 0 && authUserId) {
+        fetch("/api/streak/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ milestone })
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (d?.proUntil) setProUntil(d.proUntil);
+            if (d?.claimed) setIsPro(true); // Pro starts immediately
+          })
+          .catch(() => {
+            /* retried on the next submit */
+          });
+      }
     }
 
     patchQuiz(mode, { submittedRounds: activeRound + 1 }); // this round is now graded
@@ -878,6 +1129,155 @@ export default function Home({
     }
   }
 
+  // Grade one written answer with the AI. A single call returns the verdict and
+  // all the feedback; the result feeds the round's score when it's submitted.
+  async function gradeWritten(i: number) {
+    const q = questions[i];
+    if (!q || q.type !== "written") return;
+    const response = (answers[i] ?? "").trim();
+    if (!response) {
+      setFlashIndex(i);
+      setTimeout(() => setFlashIndex(null), 3000);
+      return;
+    }
+    if (written[i]?.status === "grading" || written[i]?.status === "done") return;
+    const gradeMode = mode;
+    patchQuiz(gradeMode, (s) => ({ written: { ...s.written, [i]: { status: "grading" } } }));
+    try {
+      const res = await fetch("/api/grade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q.question, expected: q.answer, response })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.verdict) throw new Error(data?.error ?? "grade failed");
+      patchQuiz(gradeMode, (s) => ({
+        written: {
+          ...s.written,
+          [i]: {
+            status: "done",
+            verdict: data.verdict as WrittenVerdict,
+            feedback: data.feedback,
+            modelAnswer: data.modelAnswer,
+            missingConcepts: data.missingConcepts,
+            suggestion: data.suggestion
+          }
+        }
+      }));
+    } catch {
+      // Failed — drop the state so the student can submit again.
+      patchQuiz(gradeMode, (s) => {
+        const next = { ...s.written };
+        delete next[i];
+        return { written: next };
+      });
+      setGenError("Couldn't grade that answer. Try again."); // DRAFT COPY
+    }
+  }
+
+  // The written-answer UI for one question: a text box + Submit Answer, then the
+  // AI's verdict and feedback once graded.
+  const renderWritten = (q: WrittenQuestion, i: number, qRound: number) => {
+    const res = written[i];
+    const graded = res?.status === "done";
+    const grading = res?.status === "grading";
+    const roundGraded = qRound < submittedRounds;
+    const locked = graded || grading || roundGraded;
+
+    const badge =
+      res?.verdict === "correct"
+        ? { text: "✅ Correct", color: CORRECT_GREEN }
+        : res?.verdict === "partial"
+          ? { text: "🟡 Partially Correct", color: HINT_YELLOW }
+          : { text: "❌ Incorrect", color: WRONG_RED };
+
+    return (
+      <div>
+        <textarea
+          value={answers[i] ?? ""}
+          onChange={(e) =>
+            patchQuiz(mode, (s) => ({ answers: { ...s.answers, [i]: e.target.value } }))
+          }
+          disabled={locked}
+          placeholder="Type your answer…"
+          rows={3}
+          style={{
+            width: "100%",
+            maxWidth: 560,
+            display: "block",
+            resize: "vertical",
+            padding: 10,
+            fontSize: 15,
+            fontFamily: "inherit",
+            background: "transparent",
+            color: "inherit",
+            border: "1px solid #888",
+            borderRadius: "var(--quiz-radius, 3px)",
+            outline: "none",
+            opacity: locked ? 0.8 : 1
+          }}
+        />
+
+        {!graded && !roundGraded && (
+          <button
+            onClick={() => gradeWritten(i)}
+            disabled={grading}
+            style={{
+              marginTop: 10,
+              padding: "8px 18px",
+              background: SUBMIT_GREEN,
+              color: "white",
+              fontWeight: "bold",
+              border: "none",
+              fontSize: 14,
+              cursor: grading ? "default" : "pointer"
+            }}
+          >
+            {grading ? (
+              <span className="loading-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            ) : (
+              "Submit Answer"
+            )}
+          </button>
+        )}
+
+        {graded && res && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "12px 14px",
+              border: `1px solid ${badge.color}`,
+              borderRadius: "var(--quiz-radius, 3px)",
+              maxWidth: 560
+            }}
+          >
+            <div style={{ fontWeight: "bold", color: badge.color, marginBottom: 6 }}>
+              {badge.text}
+            </div>
+            {res.feedback && (
+              <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>{res.feedback}</div>
+            )}
+            {res.verdict !== "correct" && res.modelAnswer && (
+              <div style={{ fontSize: 14, marginBottom: res.suggestion ? 8 : 0 }}>
+                <span style={{ opacity: 0.6 }}>Model answer: </span>
+                {res.modelAnswer}
+              </div>
+            )}
+            {res.suggestion && (
+              <div style={{ fontSize: 13, opacity: 0.75, fontStyle: "italic" }}>
+                💡 {res.suggestion}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // Read the NDJSON stream the server sends (one question per line, or an
   // {error} line). Calls onItem for each question as it arrives.
   async function readQuestionStream(
@@ -925,8 +1325,13 @@ export default function Home({
       setGenError("Choose grade level in settings to generate questions");
       return;
     }
-    if (amount === 0 && tfAmount === 0) {
+    if (amount === 0 && tfAmount === 0 && writtenAmount === 0) {
       setGenError("Choose a question amount larger than zero to generate");
+      return;
+    }
+    // Written questions come from the transcript; an image-only source has none.
+    if (writtenAmount > 0 && amount === 0 && tfAmount === 0 && mode === "image") {
+      setGenError("Written questions aren't available for image quizzes yet");
       return;
     }
     // Pin this run to the tab it started on, so it keeps filling that tab's quiz
@@ -958,7 +1363,13 @@ export default function Home({
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ ...payload, count: amount, tfCount: tfAmount, level: describeLevel() }),
+        body: JSON.stringify({
+          ...payload,
+          count: amount,
+          tfCount: tfAmount,
+          writtenCount: writtenAmount,
+          level: describeLevel()
+        }),
         signal: controller.signal
       });
 
@@ -1004,8 +1415,10 @@ export default function Home({
   // concepts (tagged with the next round number, so they render as yellow).
   async function runRechallenge() {
     const justGraded = submittedRounds - 1; // the round we just submitted
+    // Rechallenge rebuilds MC/TF the student missed. Written answers are graded
+    // semantically and don't fit that flow, so they're left out.
     const wrong = questions.filter(
-      (q, i) => (q.round ?? 0) === justGraded && answers[i] !== q.answer
+      (q, i) => (q.round ?? 0) === justGraded && q.type !== "written" && answers[i] !== q.answer
     );
     if (wrong.length === 0) return;
     recordRechallenge(); // stats
@@ -1419,7 +1832,7 @@ export default function Home({
         padding: 0,
         background: "transparent",
         border: "2px solid #888",
-        borderRadius: 3,
+        borderRadius: "var(--btn-radius, 3px)",
         cursor: "pointer",
         color: "inherit"
       }}
@@ -1468,14 +1881,27 @@ export default function Home({
   // The Submit / grade / Rechallenge controls shown at the end of one round.
   const renderRoundControls = (r: number) => {
     const roundTotal = questions.filter((q) => (q.round ?? 0) === r).length;
-    const roundScore = questions.reduce(
-      (t, q, i) => t + ((q.round ?? 0) === r && answers[i] === q.answer ? 1 : 0),
-      0
-    );
+    // Score with partial credit: written questions earn their AI verdict
+    // (correct 1, partial 0.5, incorrect 0); MC/TF earn 1 for a match. This is
+    // what made written answers score 0 — the old compare checked the typed
+    // text against the model answer, which never matches.
+    const roundScore = questions.reduce((t, q, i) => {
+      if ((q.round ?? 0) !== r) return t;
+      if (q.type === "written") {
+        const v = written[i]?.verdict;
+        return t + (v ? WRITTEN_SCORE[v] : 0);
+      }
+      return t + (answers[i] === q.answer ? 1 : 0);
+    }, 0);
     const graded = r < submittedRounds;
     const isActive = r === submittedRounds;
     const pct = roundTotal ? Math.round((roundScore / roundTotal) * 100) : 0;
-    const wrong = roundTotal - roundScore;
+    // Only MC/TF misses feed Rechallenge (written is excluded from it).
+    const wrong = questions.reduce(
+      (t, q, i) =>
+        t + ((q.round ?? 0) === r && q.type !== "written" && answers[i] !== q.answer ? 1 : 0),
+      0
+    );
     const maxRound = questions.reduce((m, q) => Math.max(m, q.round ?? 0), 0);
     const yellow = r >= 1; // extension rounds use the yellow theme
 
@@ -1484,6 +1910,8 @@ export default function Home({
         style={{
           display: "flex",
           alignItems: "center",
+          // Centered on mobile only; left-aligned on desktop as before.
+          justifyContent: isMobile ? "center" : "flex-start",
           gap: 12,
           flexWrap: "wrap",
           marginTop: 8,
@@ -1497,7 +1925,7 @@ export default function Home({
               background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
               color: yellow ? "#1a1a1a" : "white",
               fontWeight: "bold",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               fontSize: 20
             }}
           >
@@ -1509,11 +1937,13 @@ export default function Home({
             disabled={rechallengeLoading || loading}
             style={{
               padding: "12px 28px",
-              background: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
-              color: yellow ? "#1a1a1a" : "white",
+              ...btnColors("submit", {
+                width: 0,
+                bg: yellow ? RECHALLENGE_BTN : SUBMIT_GREEN,
+                text: yellow ? "#1a1a1a" : "white"
+              }),
               fontWeight: "bold",
-              border: "none",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               fontSize: 16,
               cursor: "pointer"
             }}
@@ -1530,10 +1960,11 @@ export default function Home({
             title={`Practise the ${wrong} you missed with ${wrong * 2} fresh questions`}
             style={{
               padding: "12px 24px",
-              background: "transparent",
-              color: RECHALLENGE_YELLOW,
-              border: `2px solid ${RECHALLENGE_BTN}`,
-              borderRadius: 3,
+              ...btnColors("rechallenge", {
+                text: RECHALLENGE_YELLOW,
+                border: RECHALLENGE_BTN
+              }),
+              borderRadius: "var(--btn-radius, 3px)",
               fontWeight: "bold",
               fontSize: 16,
               cursor: rechallengeLoading ? "default" : "pointer"
@@ -1569,10 +2000,10 @@ export default function Home({
           alignItems: "center",
           justifyContent: "center",
           padding: 0,
-          borderRadius: 3,
-          border: "2px solid #888",
-          background: "transparent",
-          color: "#cbd5e1",
+          borderRadius: "var(--btn-radius, 3px)",
+          // Match Generate: borderless on the same fill, so it reads as part of
+          // the pair instead of an outlined box stuck to its side.
+          ...btnColors("clear", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
           cursor: "pointer"
         }}
       >
@@ -1593,15 +2024,6 @@ export default function Home({
     );
 
   // Pick a font/palette in the customization panel: apply live and persist.
-  const pickTheme = (patch: Partial<ThemeChoice>) => {
-    setTheme((prev) => {
-      const next = { ...prev, ...patch };
-      applyTheme(next);
-      saveTheme(next);
-      return next;
-    });
-  };
-
   // The streak bar under the title: a thin rounded track that fills toward the
   // next reward milestone. Light orange normally; light blue while a freeze is
   // banked (5 quizzes in a day) and protecting the streak.
@@ -1619,10 +2041,40 @@ export default function Home({
       if (left < 3_600_000) return `${Math.ceil(left / 60_000)}m`;
       return `${Math.ceil(left / 3_600_000)}h`;
     };
+    // Earned Pro runs to days, which timeLeft would render as an unreadable
+    // "104h". Days once there's more than one left, hours below that.
+    const proLeft = (iso: string): string | null => {
+      const left = new Date(iso).getTime() - Date.now();
+      if (left <= 0) return null;
+      if (left < 3_600_000) return `${Math.ceil(left / 60_000)}m`;
+      if (left < 86_400_000) return `${Math.ceil(left / 3_600_000)}h`;
+      const d = Math.floor(left / 86_400_000);
+      const h = Math.floor((left % 86_400_000) / 3_600_000);
+      return h > 0 ? `${d}d ${h}h` : `${d}d`;
+    };
+    const proRemaining = proUntil ? proLeft(proUntil) : null;
     const fill = frozen ? STREAK_FROZEN_BLUE : STREAK_ORANGE;
 
     return (
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          // The streak is centered between the title and the page's content.
+          //
+          // The gap used to be split across three places — the title's
+          // marginBottom, the streak's marginBottom, and each page's own
+          // marginTop — which is why it sat hard against the title instead of
+          // in the middle. It's now owned here and split evenly, with the
+          // per-page marginTop removed so the content lands where it always did.
+          //
+          // Mobile uses 32/22 rather than 27/27 because the title's
+          // translateY(10px) shifts it down visually without changing layout,
+          // eating 10px of the gap above.
+          marginTop: isMobile ? 32 : DESKTOP_STREAK_ABOVE,
+          marginBottom: isMobile ? 22 : DESKTOP_STREAK_BELOW
+        }}
+      >
         {/* day count + bar + the "i" that reveals what the next milestone pays */}
         <div
           ref={streakInfoRef}
@@ -1692,7 +2144,7 @@ export default function Home({
                 background: "var(--background)",
                 color: "var(--foreground)",
                 border: "1px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 padding: "6px 10px",
                 fontSize: 12,
                 boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
@@ -1700,6 +2152,12 @@ export default function Home({
               }}
             >
               <div>{target} days - {reward} days Pro</div>
+              {proRemaining && (
+                // DRAFT COPY — William to reword.
+                <div style={{ marginTop: 4, color: STREAK_FROZEN_BLUE }}>
+                  Pro from your streak - {proRemaining} left
+                </div>
+              )}
               {frozen && (
                 <div style={{ marginTop: 4, color: STREAK_FROZEN_BLUE }}>
                   Streak freeze ready
@@ -1738,8 +2196,22 @@ export default function Home({
     ];
   };
 
+  // On mobile the title sits in the band beside the menu and profile buttons
+  // (both y70-110). At 70px "Athenia" is 247px wide, so centred it spans
+  // 64-311 while those buttons end at 55 and start at 320 — it slots between
+  // them rather than below them, which is what the old 104px padding forced.
   return (
-    <main style={{ padding: 40 }}>
+    // Flex column so Arrange mode can reorder blocks with CSS `order` alone —
+    // no absolute positioning, nothing that can land off-screen. Anything
+    // without an order (modals, fixed bars) keeps the default 0 and so stays
+    // exactly where it was.
+    <main
+      style={{
+        padding: isMobile ? "56px 16px 40px" : 40,
+        display: "flex",
+        flexDirection: "column"
+      }}
+    >
       <WhatsNew />
 
       {/* Fullscreen image viewer — click anywhere to close */}
@@ -1798,10 +2270,11 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          right: 68, // just left of the 40px "?" at right:20
+          right: 63, // just left of the 40px "?" at right:15
           display: "flex",
           gap: 8,
-          zIndex: 1000
+          zIndex: 1000,
+          background: "var(--background)" // solid, so scrolling questions don't bleed through (matches the tab bar)
         }}
       >
         {/* Upgrade indicator: a thick muted-green up arrow beside the profile
@@ -1838,8 +2311,8 @@ export default function Home({
         {!isMobile && <AuthButton />}
         {!isMobile &&
         [
-          { label: "Updates", href: "/updates" },
-          { label: "Support", href: "/support" }
+          { id: "updates", label: "Updates", href: "/updates" },
+          { id: "support", label: "Support", href: "/support" }
         ].map((link) => (
           <Link
             key={link.href}
@@ -1849,10 +2322,8 @@ export default function Home({
               padding: "0 16px",
               display: "inline-flex",
               alignItems: "center",
-              borderRadius: 3,
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              borderRadius: "var(--btn-radius, 3px)",
+              ...btnColors(link.id as "updates" | "support"),
               fontSize: 16,
               textDecoration: "none",
               cursor: "pointer"
@@ -1861,6 +2332,299 @@ export default function Home({
             {link.label}
           </Link>
         ))}
+
+        {/* Arrange — square with four stemless arrows. Opens the layout editor:
+            pick a page, then reorder or hide that page's blocks. */}
+        {!isMobile && (
+          <div ref={arrangeRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => {
+                setArrangeOpen((v) => !v);
+                setArrangePage(null);
+              }}
+              aria-label="Arrange layout"
+              aria-expanded={arrangeOpen}
+              title="Arrange layout"
+              style={{
+                width: 40,
+                height: 40,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: "50%",
+                border: `2px solid ${arrangeOpen ? ACCENT_TEXT : "#888"}`,
+                background: arrangeOpen ? ACCENT_BG : "transparent",
+                color: "inherit",
+                cursor: "pointer"
+              }}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+                <rect
+                  x="9"
+                  y="9"
+                  width="6"
+                  height="6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+                {/* four arrowheads, no stems */}
+                <path d="M12 1.5 L15.4 6 H8.6 Z" fill="currentColor" />
+                <path d="M12 22.5 L8.6 18 H15.4 Z" fill="currentColor" />
+                <path d="M1.5 12 L6 8.6 V15.4 Z" fill="currentColor" />
+                <path d="M22.5 12 L18 15.4 V8.6 Z" fill="currentColor" />
+              </svg>
+            </button>
+
+            {arrangeOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 46,
+                  right: 0,
+                  width: 250,
+                  padding: 10,
+                  background: "var(--background)",
+                  border: "2px solid #888",
+                  borderRadius: "var(--btn-radius, 3px)",
+                  zIndex: 1001
+                }}
+              >
+                {arrangePage === null ? (
+                  <>
+                    <div style={{ fontSize: 12, opacity: 0.6, padding: "2px 4px 8px" }}>
+                      Which page do you want to arrange?
+                    </div>
+                    {PAGES.map((p) => {
+                      // Picking a page takes you to it, so you're looking at
+                      // what you're arranging. The three quiz tabs and the
+                      // settings panel live on this screen; the rest are routes.
+                      const href = ARRANGE_HREFS[p.id];
+                      const rowStyle: React.CSSProperties = {
+                        flex: 1,
+                        textAlign: "left",
+                        padding: "8px 6px",
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        fontSize: 14,
+                        textDecoration: "none",
+                        cursor: "pointer"
+                      };
+                      return (
+                      <div
+                        key={p.id}
+                        style={{ display: "flex", alignItems: "center", gap: 6 }}
+                      >
+                        {href ? (
+                          <Link href={href} style={rowStyle}>
+                            {p.name}
+                          </Link>
+                        ) : (
+                          <button onClick={() => openArrangePage(p.id)} style={rowStyle}>
+                            {p.name}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => resetPageLayout(p.id)}
+                          title={`Reset ${p.name} to the default layout`}
+                          aria-label={`Reset ${p.name}`}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            flexShrink: 0,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
+                            border: "none",
+                            borderRadius: "var(--btn-radius, 3px)",
+                            background: ACCENT_BG,
+                            color: ACCENT_TEXT,
+                            cursor: "pointer"
+                          }}
+                        >
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                            <path d="M3 3v5h5" />
+                          </svg>
+                        </button>
+                      </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "2px 4px 8px"
+                      }}
+                    >
+                      <button
+                        onClick={() => setArrangePage(null)}
+                        aria-label="Back to pages"
+                        style={{
+                          padding: 0,
+                          border: "none",
+                          background: "transparent",
+                          color: "inherit",
+                          fontSize: 16,
+                          lineHeight: 1,
+                          cursor: "pointer"
+                        }}
+                      >
+                        ←
+                      </button>
+                      <span style={{ fontSize: 12, opacity: 0.6 }}>
+                        {PAGES.find((p) => p.id === arrangePage)?.name}
+                        {PAGE_BLOCKS[arrangePage].length > 0 && " — drag to reorder"}
+                      </span>
+                    </div>
+
+                    {PAGE_BLOCKS[arrangePage].length === 0 ? (
+                      <div style={{ fontSize: 13, opacity: 0.6, padding: "6px 4px 4px" }}>
+                        Nothing to arrange on this page yet.
+                      </div>
+                    ) : (
+                      <div
+                        // Keep the gaps between rows valid drop targets, and drop
+                        // the marker if the drag wanders out of the list entirely.
+                        onDragOver={(e) => {
+                          if (dragBlock) e.preventDefault();
+                        }}
+                        onDragLeave={(e) => {
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                            setBlockDropIndex(null);
+                          }
+                        }}
+                      >
+                      {(() => {
+                        const cur = pageLayout(layoutMap, arrangePage);
+                        const last = cur.order.length - 1;
+                        return cur.order.map((id, index) => {
+                          const def = PAGE_BLOCKS[arrangePage].find((b) => b.id === id);
+                          if (!def) return null;
+                          const off = cur.hidden.includes(id);
+                          const dragging = dragBlock === id;
+                          // Indicator sits on the edge the block would land at.
+                          // An inset shadow, so it never nudges the layout.
+                          const marker =
+                            dragBlock && blockDropIndex === index
+                              ? `inset 0 3px 0 ${STREAK_FROZEN_BLUE}`
+                              : dragBlock && blockDropIndex === last + 1 && index === last
+                                ? `inset 0 -3px 0 ${STREAK_FROZEN_BLUE}`
+                                : undefined;
+                          return (
+                            <div
+                              key={id}
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData("text/plain", id); // Firefox needs data set
+                                e.dataTransfer.effectAllowed = "move";
+                                setDragBlock(id);
+                              }}
+                              onDragOver={(e) => {
+                                if (!dragBlock) return;
+                                e.preventDefault(); // marks this a valid drop target
+                                e.dataTransfer.dropEffect = "move";
+                                markBlockDrop(index, e);
+                              }}
+                              onDrop={(e) => e.preventDefault()}
+                              onDragEnd={() => commitBlockOrder(arrangePage)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                padding: "7px 6px",
+                                marginBottom: 2,
+                                border: "1px solid #888",
+                                borderRadius: "var(--btn-radius, 3px)",
+                                background: dragging ? "rgba(136,136,136,0.15)" : "transparent",
+                                boxShadow: marker,
+                                opacity: dragging ? 0.4 : off ? 0.45 : 1,
+                                cursor: dragging ? "grabbing" : "grab",
+                                userSelect: "none" // no text selection while dragging
+                              }}
+                            >
+                              {/* grip */}
+                              <span
+                                aria-hidden="true"
+                                style={{ opacity: 0.5, fontSize: 13, lineHeight: 1 }}
+                              >
+                                ⠿
+                              </span>
+                              <span style={{ flex: 1, fontSize: 14 }}>{def.name}</span>
+                              <button
+                                draggable={false}
+                                onClick={() => toggleBlock(arrangePage, id)}
+                                title={off ? `Show ${def.name}` : `Hide ${def.name}`}
+                                aria-label={off ? `Show ${def.name}` : `Hide ${def.name}`}
+                                style={{
+                                  padding: 0,
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "inherit",
+                                  lineHeight: 0,
+                                  cursor: "pointer"
+                                }}
+                              >
+                                <svg
+                                  width="17"
+                                  height="17"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                  {off && <path d="M3 3l18 18" />}
+                                </svg>
+                              </button>
+                            </div>
+                          );
+                        });
+                      })()}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => resetPageLayout(arrangePage)}
+                      style={{
+                        width: "100%",
+                        marginTop: 8,
+                        padding: "7px 0",
+                        border: "1px solid #888",
+                        borderRadius: "var(--btn-radius, 3px)",
+                        background: "transparent",
+                        color: "inherit",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        opacity: 0.8
+                      }}
+                    >
+                      Reset this page
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Quiz History — circular button with a history (clock + back-arrow) icon */}
         {!isMobile && (
@@ -1875,9 +2639,7 @@ export default function Home({
               alignItems: "center",
               justifyContent: "center",
               borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors("history"),
               textDecoration: "none",
               cursor: "pointer"
             }}
@@ -1899,42 +2661,10 @@ export default function Home({
           </Link>
         )}
 
-        {/* Stats — circular button with an ascending bar-chart icon */}
+        {/* Customize — opens the full customization page */}
         {!isMobile && (
-          <button
-            onClick={() => {
-              setStatsData(loadStats());
-              setShowStats(true);
-            }}
-            aria-label="Stats"
-            title="Stats"
-            style={{
-              width: 40,
-              height: 40,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
-              cursor: "pointer"
-            }}
-          >
-            <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor">
-              {/* three ascending bars: small, medium, large — squared off (rx 1) */}
-              <rect x="3" y="14" width="4.5" height="7" rx="1" />
-              <rect x="9.75" y="9" width="4.5" height="12" rx="1" />
-              <rect x="16.5" y="4" width="4.5" height="17" rx="1" />
-            </svg>
-          </button>
-        )}
-
-        {/* Customize — circular button with a minimal palette + brush icon.
-            Not wired to anything yet (the customization panel comes later). */}
-        {!isMobile && (
-          <button
-            onClick={() => setShowCustomize(true)}
+          <Link
+            href="/customize"
             aria-label="Customize"
             title="Customize"
             style={{
@@ -1944,9 +2674,7 @@ export default function Home({
               alignItems: "center",
               justifyContent: "center",
               borderRadius: "50%",
-              border: "2px solid #888",
-              background: "transparent",
-              color: "inherit",
+              ...btnColors("customize"),
               cursor: "pointer"
             }}
           >
@@ -1968,128 +2696,39 @@ export default function Home({
               <circle cx="8.5" cy="7.5" r="1.4" fill="currentColor" stroke="none" />
               <circle cx="6.5" cy="12.5" r="1.4" fill="currentColor" stroke="none" />
             </svg>
+          </Link>
+        )}
+
+        {/* Stats — circular button with an ascending bar-chart icon */}
+        {!isMobile && (
+          <button
+            onClick={() => {
+              setStatsData(loadStats());
+              setShowStats(true);
+            }}
+            aria-label="Stats"
+            title="Stats"
+            style={{
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "50%",
+              ...btnColors("stats"),
+              cursor: "pointer"
+            }}
+          >
+            <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor">
+              {/* three ascending bars: small, medium, large — squared off (rx 1) */}
+              <rect x="3" y="14" width="4.5" height="7" rx="1" />
+              <rect x="9.75" y="9" width="4.5" height="12" rx="1" />
+              <rect x="16.5" y="4" width="4.5" height="17" rx="1" />
+            </svg>
           </button>
         )}
       </div>
 
-      {/* Customization panel — fonts and color palettes */}
-      {showCustomize && (
-        <div
-          onClick={() => setShowCustomize(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 2000,
-            padding: 20
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 380,
-              maxWidth: "100%",
-              background: "var(--background)",
-              color: "var(--foreground)",
-              border: "1px solid #888",
-              borderRadius: 3,
-              padding: 24,
-              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
-            }}
-          >
-            <div style={{ fontWeight: "bold", fontSize: 22, textAlign: "center", marginBottom: 18 }}>
-              Customize
-            </div>
-
-            <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 8 }}>Font</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {FONTS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => pickTheme({ font: f.id })}
-                  style={{
-                    flex: 1,
-                    padding: "10px 0",
-                    border:
-                      theme.font === f.id ? `2px solid ${STREAK_FROZEN_BLUE}` : "1px solid #888",
-                    borderRadius: 3,
-                    background: "transparent",
-                    color: "inherit",
-                    fontSize: 15,
-                    fontFamily: f.css, // each button previews its own font
-                    cursor: "pointer"
-                  }}
-                >
-                  {f.name}
-                </button>
-              ))}
-            </div>
-
-            <div style={{ fontSize: 13, opacity: 0.6, margin: "18px 0 8px" }}>Palette</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-              {PALETTES.map((pal) => (
-                <button
-                  key={pal.id}
-                  onClick={() => pickTheme({ palette: pal.id })}
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "10px 0 8px",
-                    border:
-                      theme.palette === pal.id
-                        ? `2px solid ${STREAK_FROZEN_BLUE}`
-                        : "1px solid #888",
-                    borderRadius: 3,
-                    background: "transparent",
-                    color: "inherit",
-                    cursor: "pointer"
-                  }}
-                >
-                  {/* swatch: the palette's background with its text colour dot */}
-                  <span
-                    style={{
-                      width: 26,
-                      height: 26,
-                      borderRadius: 3,
-                      background: pal.bg,
-                      border: "1px solid #888",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center"
-                    }}
-                  >
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.fg }} />
-                  </span>
-                  <span style={{ fontSize: 12 }}>{pal.name}</span>
-                </button>
-              ))}
-            </div>
-
-            <button
-              onClick={() => pickTheme({ ...DEFAULT_THEME })}
-              style={{
-                marginTop: 18,
-                width: "100%",
-                padding: "8px 0",
-                border: "1px solid #888",
-                borderRadius: 3,
-                background: "transparent",
-                color: "inherit",
-                fontSize: 13,
-                cursor: "pointer",
-                opacity: 0.8
-              }}
-            >
-              Reset to default
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Athenia Pro upgrade screen */}
       <PricingModal open={showPricing} onClose={() => setShowPricing(false)} isPro={isPro} />
@@ -2117,7 +2756,7 @@ export default function Home({
               background: "var(--background)",
               color: "var(--foreground)",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: 24,
               boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
             }}
@@ -2159,13 +2798,11 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          right: 20,
+          right: 15,
           width: 40,
           height: 40,
           borderRadius: "50%",
-          border: "2px solid #888",
-          background: "var(--background)",
-          color: "inherit",
+          ...btnColors("help", { bg: "var(--background)" }),
           fontSize: 24,
           fontWeight: "bold",
           cursor: "pointer",
@@ -2182,12 +2819,12 @@ export default function Home({
           style={{
             position: "fixed",
             top: 70,
-            right: 20,
+            right: 15,
             maxWidth: 280,
             background: "var(--background)",
             color: "var(--foreground)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             padding: 16,
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 1100 // sit above the mobile profile button
@@ -2200,7 +2837,7 @@ export default function Home({
 
       {/* Mobile account button: profile picture + caret, under the "?" */}
       {isMobile && authClient && (
-        <div ref={accountMenuRef} style={{ position: "fixed", top: 70, right: 20, zIndex: 1000 }}>
+        <div ref={accountMenuRef} style={{ position: "fixed", top: 70, right: 15, zIndex: 1000 }}>
           {authEmail ? (
             accountMenuOpen ? (
               // Expanded oval: avatar on top, then switch / log out, divided by lines
@@ -2289,10 +2926,8 @@ export default function Home({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  border: "2px solid #777",
                   borderRadius: "50%",
-                  background: "var(--background)",
-                  color: "inherit",
+                  ...btnColors("account", { border: "#777", bg: "var(--background)" }),
                   cursor: "pointer",
                   overflow: "hidden"
                 }}
@@ -2323,10 +2958,8 @@ export default function Home({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                border: "2px solid #777",
                 borderRadius: "50%",
-                background: "var(--background)",
-                color: "inherit",
+                ...btnColors("account", { border: "#777", bg: "var(--background)" }),
                 cursor: "pointer"
               }}
             >
@@ -2356,13 +2989,11 @@ export default function Home({
         style={{
           position: "fixed",
           top: 20,
-          left: 20,
+          left: 15,
           width: 40,
           height: 40,
           borderRadius: "50%",
-          border: "2px solid #888",
-          background: "var(--background)",
-          color: "inherit",
+          ...btnColors("settings", { bg: "var(--background)" }),
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
@@ -2392,12 +3023,12 @@ export default function Home({
           style={{
             position: "fixed",
             top: 70,
-            left: 20,
+            left: 15,
             width: 300,
             background: "var(--background)",
             color: "var(--foreground)",
             border: "1px solid #888",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             padding: 20,
             boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
             zIndex: 1000,
@@ -2449,7 +3080,7 @@ export default function Home({
                   justifyContent: "center",
                   background: instantFeedback ? ACCENT_BG : "#000",
                   border: "1px solid #999",
-                  borderRadius: 3
+                  borderRadius: "var(--btn-radius, 3px)"
                 }}
               >
                 {instantFeedback && (
@@ -2487,7 +3118,7 @@ export default function Home({
                   style={{
                     width: 44,
                     height: 36,
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: amount === n ? ACCENT_BG_STRONG : "transparent",
                     color: amount === n ? ACCENT_TEXT : "inherit",
@@ -2512,11 +3143,36 @@ export default function Home({
                   style={{
                     width: 44,
                     height: 36,
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: tfAmount === n ? ACCENT_BG_STRONG : "transparent",
                     color: tfAmount === n ? ACCENT_TEXT : "inherit",
                     fontWeight: tfAmount === n ? "bold" : "normal",
+                    cursor: "pointer"
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Written-answer amount: pick one of 5 / 10 / 15 / 20 */}
+          <div>
+            <div style={{ fontWeight: "bold", marginBottom: 8 }}>Written-answer questions</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[0, 5, 10, 15, 20].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setWrittenAmount(n)}
+                  style={{
+                    width: 44,
+                    height: 36,
+                    borderRadius: "var(--btn-radius, 3px)",
+                    border: "2px solid #888",
+                    background: writtenAmount === n ? ACCENT_BG_STRONG : "transparent",
+                    color: writtenAmount === n ? ACCENT_TEXT : "inherit",
+                    fontWeight: writtenAmount === n ? "bold" : "normal",
                     cursor: "pointer"
                   }}
                 >
@@ -2580,7 +3236,7 @@ export default function Home({
                     minWidth: 40,
                     height: 36,
                     padding: "0 10px",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     border: "2px solid #888",
                     background: gradeYear === g ? ACCENT_BG_STRONG : "transparent",
                     color: gradeYear === g ? ACCENT_TEXT : "inherit",
@@ -2602,17 +3258,34 @@ export default function Home({
           fontFamily: "var(--font-playfair), Georgia, serif",
           fontStyle: "italic",
           fontWeight: "bold",
-          fontSize: 64,
+          // Sized to fill the phone's width; the line is broken explicitly
+          // below so "Pro" always sits under "Athenia" rather than depending
+          // on where the wrap happens to land.
+          fontSize: isMobile ? 70 : 64,
           marginTop: 0,      // sit up near the top edge
-          marginBottom: 12,
+          marginBottom: 0,   // the streak's margin owns the gap below
+          lineHeight: isMobile ? 1.0 : undefined,
           transform: "translateY(10px)",  // nudge just the text down, without shifting the layout below
-          color: isPro ? STREAK_FROZEN_BLUE : undefined // Pro accounts wear the light blue
+          color: isPro ? STREAK_FROZEN_BLUE : undefined, // Pro accounts wear the light blue
+          ...blockStyle("title", "block")
         }}
       >
-        {isPro ? "Athenia Pro" : "Athenia"}
+        {isPro ? (
+          isMobile ? (
+            <>
+              Athenia
+              <br />
+              Pro
+            </>
+          ) : (
+            "Athenia Pro"
+          )
+        ) : (
+          "Athenia"
+        )}
       </h1>
 
-      {renderStreak()}
+      <div style={blockStyle("streak", "block")}>{renderStreak()}</div>
 
       {/* Tab bar: fixed at the top-left (desktop only — mobile uses the menu) */}
       {!isMobile && (
@@ -2634,10 +3307,11 @@ export default function Home({
             style={{
               height: 40,
               padding: "0 16px",
-              borderRadius: 3,
-              border: "2px solid #888",
-              background: mode === m ? ACCENT_BG : "transparent",
-              color: mode === m ? ACCENT_TEXT : "inherit",
+              borderRadius: "var(--btn-radius, 3px)",
+              ...btnColors(m, {
+                bg: mode === m ? ACCENT_BG : "transparent",
+                text: mode === m ? ACCENT_TEXT : "inherit"
+              }),
               fontWeight: "bold",
               fontSize: 16,
               cursor: "pointer",
@@ -2647,12 +3321,29 @@ export default function Home({
             {m}
           </button>
         ))}
+        {/* Game is a separate page, not a quiz mode — sits at the end of the row */}
+        <Link
+          href="/games"
+          style={{
+            height: 40,
+            padding: "0 16px",
+            display: "inline-flex",
+            alignItems: "center",
+            borderRadius: "var(--btn-radius, 3px)",
+            ...btnColors("games"),
+            fontWeight: "bold",
+            fontSize: 16,
+            textDecoration: "none"
+          }}
+        >
+          Games
+        </Link>
       </div>
       )}
 
       {/* Mobile menu: hamburger under the cog (hidden while the settings panel is open) */}
       {isMobile && !showSettings && (
-        <div ref={mobileMenuRef} style={{ position: "fixed", top: 70, left: 20, zIndex: 1000 }}>
+        <div ref={mobileMenuRef} style={{ position: "fixed", top: 70, left: 15, zIndex: 1000 }}>
           <button
             onClick={() => setMobileMenuOpen((v) => !v)}
             aria-label="Menu"
@@ -2667,7 +3358,7 @@ export default function Home({
               gap: 5,
               padding: "0 9px",
               border: "2px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               background: "var(--background)",
               color: "inherit",
               cursor: "pointer",
@@ -2693,7 +3384,7 @@ export default function Home({
                 flexDirection: "column",
                 background: "var(--background)",
                 border: "2px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 overflow: "hidden",
                 zIndex: 0 // behind the button, so the shared edge reads as one line
               }}
@@ -2709,9 +3400,11 @@ export default function Home({
                   style={{
                     padding: "12px 16px",
                     textAlign: "left",
-                    border: "none",
-                    background: mode === m ? ACCENT_BG : "transparent",
-                    color: mode === m ? ACCENT_TEXT : "inherit",
+                    ...btnColors(m, {
+                      width: 0,
+                      bg: mode === m ? ACCENT_BG : "transparent",
+                      text: mode === m ? ACCENT_TEXT : "inherit"
+                    }),
                     fontSize: 16,
                     fontWeight: mode === m ? "bold" : "normal",
                     cursor: "pointer",
@@ -2721,11 +3414,105 @@ export default function Home({
                   {m}
                 </button>
               ))}
+              <Link
+                href="/games"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  ...btnColors("games", { width: 0 }),
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Games
+              </Link>
+              {/* Stats / Quiz History / Customize are one group: only the first
+                  carries the divider, so they read as a block the way the tabs
+                  above do. */}
+              {[
+                { label: "Customize", href: "/customize" },
+                { label: "Quiz History", href: "/history" },
+                {
+                  label: "Stats",
+                  act: () => {
+                    setStatsData(loadStats());
+                    setShowStats(true);
+                  }
+                }
+              ].map((item, i) => {
+                const style = {
+                  padding: "12px 16px",
+                  textAlign: "left" as const,
+                  border: "none",
+                  borderTop: i === 0 ? "1px solid #888" : undefined,
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                };
+                return item.href ? (
+                  <Link
+                    key={item.label}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    style={style}
+                  >
+                    {item.label}
+                  </Link>
+                ) : (
+                  <button
+                    key={item.label}
+                    role="menuitem"
+                    onClick={() => {
+                      item.act?.();
+                      setMobileMenuOpen(false);
+                    }}
+                    style={style}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+              <Link
+                href="/support"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Support
+              </Link>
+              <Link
+                href="/updates"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  padding: "12px 16px",
+                  textAlign: "left",
+                  borderTop: "1px solid #888",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 16,
+                  textDecoration: "none",
+                  cursor: "pointer"
+                }}
+              >
+                Updates
+              </Link>
+              {/* Upgrade sits last, in its own section. */}
               <button
                 role="menuitem"
                 onClick={() => {
-                  setStatsData(loadStats());
-                  setShowStats(true);
+                  setShowPricing(true);
                   setMobileMenuOpen(false);
                 }}
                 style={{
@@ -2734,35 +3521,13 @@ export default function Home({
                   border: "none",
                   borderTop: "1px solid #888",
                   background: "transparent",
-                  color: "inherit",
+                  color: STREAK_FROZEN_BLUE,
                   fontSize: 16,
                   cursor: "pointer"
                 }}
               >
-                Stats
+                Upgrade
               </button>
-              {[
-                { label: "Support", href: "/support" },
-                { label: "Updates", href: "/updates" }
-              ].map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                  style={{
-                    padding: "12px 16px",
-                    textAlign: "left",
-                    borderTop: "1px solid #888",
-                    background: "transparent",
-                    color: "inherit",
-                    fontSize: 16,
-                    textDecoration: "none",
-                    cursor: "pointer"
-                  }}
-                >
-                  {link.label}
-                </Link>
-              ))}
             </div>
           )}
         </div>
@@ -2797,10 +3562,12 @@ export default function Home({
           width: "100%",
           // Lines the toolbar up with the top of the image / audio upload boxes
           // (those sit at 68 under the streak; the 2px border puts the toolbar at 68 too).
-          marginTop: 66,
+          // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+          marginTop: 0,
           border: `2px solid ${dragging ? ACCENT_TEXT : "#888"}`,
-          borderRadius: 3,
-          transition: "border-color 0.15s"
+          borderRadius: "var(--btn-radius, 3px)",
+          transition: "border-color 0.15s",
+          ...blockStyle("input", "block")
         }}
       >
         {/* Toolbar: the click-to-upload button plus a hint about the other ways */}
@@ -2825,7 +3592,7 @@ export default function Home({
               padding: "6px 12px",
               background: "transparent",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               cursor: "pointer",
               color: "inherit",
               fontSize: 14
@@ -2869,6 +3636,15 @@ export default function Home({
           }}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          // Enter generates; Shift+Enter (and the IME composition pass) still
+          // inserts a newline. Without the isComposing guard, picking a
+          // candidate in a Japanese/Chinese IME would fire a generation.
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+            e.preventDefault();
+            if (loading || !text.trim()) return;
+            generateQuestions();
+          }}
           placeholder={placeholder}
         />
 
@@ -2883,7 +3659,7 @@ export default function Home({
               justifyContent: "center",
               pointerEvents: "none", // let the drop pass through to the box
               background: ACCENT_BG,
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               color: ACCENT_TEXT,
               fontSize: 16,
               fontWeight: 500
@@ -2896,7 +3672,14 @@ export default function Home({
 
       {/* Generate stays centered under the textarea; the restart hangs off its
           right absolutely so it can't nudge the button when it appears. */}
-      <div style={{ position: "relative", width: "fit-content", margin: "12px auto 0" }}>
+      <div
+        style={{
+          position: "relative",
+          width: "fit-content",
+          margin: "12px auto 0",
+          ...blockStyle("generate", "block")
+        }}
+      >
         <button
           onClick={() => generateQuestions()}
           disabled={loading}
@@ -2905,10 +3688,8 @@ export default function Home({
             padding: "10px 24px",
             minWidth: 190,
             height: 44,
-            background: ACCENT_BG,
-            color: ACCENT_TEXT,
-            border: "none",
-            borderRadius: 3,
+            ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
+            borderRadius: "var(--btn-radius, 3px)",
             fontSize: 16,
             cursor: loading ? "default" : "pointer"
           }}
@@ -2939,11 +3720,11 @@ export default function Home({
       {mode === "image" && (
         <div
           style={{
-            display: "flex",
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: 20
+            marginTop: isMobile ? 0 : 20,
+            ...blockStyle("input", "flex")
           }}
         >
           {/* Left column: uploaded image previews (desktop only; on mobile a
@@ -2972,7 +3753,7 @@ export default function Home({
                     maxWidth: 160,
                     maxHeight: 160,
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     objectFit: "contain",
                     cursor: "pointer" // click to view fullscreen
                   }}
@@ -3013,7 +3794,8 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              marginTop: 48 // keep the upload box near the textarea's height
+              // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+              marginTop: 0
             }}
           >
             {/* Hidden image picker (can select several at once) */}
@@ -3042,7 +3824,7 @@ export default function Home({
                 height: 96,
                 background: "transparent",
                 border: "2px solid #888",
-                borderRadius: 3,
+                borderRadius: "var(--btn-radius, 3px)",
                 cursor: loading ? "default" : "pointer",
                 color: "inherit"
               }}
@@ -3120,10 +3902,8 @@ export default function Home({
                   padding: "10px 24px",
                   minWidth: 190,
                   height: 44,
-                  background: ACCENT_BG,
-                  color: ACCENT_TEXT,
-                  border: "none",
-                  borderRadius: 3,
+                  ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
                 }}
@@ -3157,11 +3937,11 @@ export default function Home({
       {mode === "audio" && (
         <div
           style={{
-            display: "flex",
             flexDirection: isMobile ? "column" : "row",
             alignItems: isMobile ? "center" : "flex-start",
             gap: 24,
-            marginTop: 20
+            marginTop: isMobile ? 0 : 20,
+            ...blockStyle("input", "flex")
           }}
         >
           {/* Left column: uploaded audio/video players (desktop only; on mobile a
@@ -3181,7 +3961,7 @@ export default function Home({
                 key={i}
                 style={{
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   padding: 10
                 }}
               >
@@ -3250,7 +4030,8 @@ export default function Home({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              marginTop: 48
+              // The streak's margin owns this gap now (see DESKTOP_TITLE_GAP).
+              marginTop: 0
             }}
           >
             {/* Hidden audio/video picker (can select several at once) */}
@@ -3267,13 +4048,28 @@ export default function Home({
 
             {/* On mobile a small video preview sits centered above the two
                 buttons; tap it to expand fullscreen. Audio-only files show a
-                compact name chip in the same spot instead. */}
-            {isMobile && audioFiles[0]?.isVideo && (
+                compact name chip in the same spot instead.
+
+                The slot is a FIXED height that's reserved whether or not a file
+                is attached, so adding one drops it into place instead of
+                shoving the buttons and Generate down the screen. */}
+            {isMobile && (
+            <div
+              style={{
+                // Reserved whether or not a file is attached, so attaching one
+                // doesn't shove the buttons down. Kept as small as the preview
+                // allows — every pixel here is dead space when it's empty.
+                height: 44,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center"
+              }}
+            >
+            {audioFiles[0]?.isVideo && (
               <div
                 onClick={() => setFullscreenVideo(audioFiles[0].previewUrl)}
                 style={{
                   position: "relative",
-                  marginBottom: 16,
                   cursor: "pointer",
                   lineHeight: 0
                 }}
@@ -3284,11 +4080,11 @@ export default function Home({
                   playsInline
                   preload="metadata"
                   style={{
-                    width: 132,
-                    height: 84,
+                    width: 64,
+                    height: 40, // fits the 44px reserved slot above
                     objectFit: "cover",
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     background: "#000"
                   }}
                 />
@@ -3339,13 +4135,12 @@ export default function Home({
                 </button>
               </div>
             )}
-            {isMobile && audioFiles[0] && !audioFiles[0].isVideo && (
+            {audioFiles[0] && !audioFiles[0].isVideo && (
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  marginBottom: 16,
                   maxWidth: 240,
                   fontSize: 14,
                   color: "#c7c7c7"
@@ -3385,6 +4180,8 @@ export default function Home({
                 </button>
               </div>
             )}
+            </div>
+            )}
 
             {/* Add buttons: microphone (upload a file) + YouTube (paste a link) */}
             <div style={{ display: "flex", gap: 12 }}>
@@ -3401,7 +4198,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3445,7 +4242,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: recording ? "2px solid #e0776b" : "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3511,7 +4308,7 @@ export default function Home({
                   height: 96,
                   background: "transparent",
                   border: showYoutube ? "2px solid #cbd5e1" : "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   cursor: loading ? "default" : "pointer",
                   color: "inherit"
                 }}
@@ -3550,7 +4347,7 @@ export default function Home({
                   width: 260,
                   height: 40,
                   border: "2px solid #888",
-                  borderRadius: 3,
+                  borderRadius: "var(--btn-radius, 3px)",
                   padding: "0 12px",
                   fontSize: 15,
                   background: "transparent",
@@ -3568,7 +4365,7 @@ export default function Home({
                     height: 16,
                     width: "100%",
                     border: "2px solid #888",
-                    borderRadius: 3,
+                    borderRadius: "var(--btn-radius, 3px)",
                     background: "transparent",
                     overflow: "hidden"
                   }}
@@ -3594,7 +4391,7 @@ export default function Home({
                 </p>
               </div>
             ) : (
-              <p style={{ opacity: 0.7, marginTop: 12 }}>
+              <p style={{ opacity: 0.7, marginTop: 12, textAlign: "center" }}>
                 Upload audio or a YouTube link to generate questions
               </p>
             )}
@@ -3609,10 +4406,8 @@ export default function Home({
                   padding: "10px 24px",
                   minWidth: 190,
                   height: 44,
-                  background: ACCENT_BG,
-                  color: ACCENT_TEXT,
-                  border: "none",
-                  borderRadius: 3,
+                  ...btnColors("generate", { width: 0, bg: ACCENT_BG, text: ACCENT_TEXT }),
+                  borderRadius: "var(--btn-radius, 3px)",
                   fontSize: 16,
                   cursor: loading ? "default" : "pointer"
                 }}
@@ -3642,7 +4437,18 @@ export default function Home({
         </div>
       )}
 
-      <div style={{ marginTop: 32 }}>
+      {/* Questions flow into --q-cols columns (Customize -> Question layout).
+          One column is the default and lays out exactly like the old block
+          stack; mobile is pinned to one regardless, since there's never room. */}
+      <div
+        style={{
+          marginTop: 32,
+          gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "var(--q-cols, minmax(0, 1fr))",
+          columnGap: 18,
+          alignItems: "start",
+          ...blockStyle("questions", "grid")
+        }}
+      >
         {questions.map((q, i) => {
           const qRound = q.round ?? 0;
           // Reveal right/wrong once this question's round is graded, OR instantly
@@ -3650,15 +4456,30 @@ export default function Home({
           const revealed =
             qRound < submittedRounds || (instantFeedback && answers[i] != null);
 
+          // Written questions carry their own AI verdict; everything else is a
+          // straight right/wrong compare.
+          const wRes = q.type === "written" ? written[i] : undefined;
+
           // Title colour: green/red once revealed; otherwise yellow for extension
           // (rechallenge) questions, and the default colour for the original round.
-          const titleColor = revealed
-            ? answers[i] === q.answer
-              ? CORRECT_GREEN
-              : WRONG_RED
-            : qRound >= 1
-              ? RECHALLENGE_YELLOW
-              : undefined;
+          const titleColor =
+            q.type === "written"
+              ? wRes?.status === "done"
+                ? wRes.verdict === "correct"
+                  ? CORRECT_GREEN
+                  : wRes.verdict === "partial"
+                    ? HINT_YELLOW
+                    : WRONG_RED
+                : qRound >= 1
+                  ? RECHALLENGE_YELLOW
+                  : undefined
+              : revealed
+                ? answers[i] === q.answer
+                  ? CORRECT_GREEN
+                  : WRONG_RED
+                : qRound >= 1
+                  ? RECHALLENGE_YELLOW
+                  : undefined;
 
           // Last question of its round? (rounds are contiguous in the array)
           const isLastOfRound =
@@ -3672,13 +4493,24 @@ export default function Home({
               className={`q-card${flashIndex === i ? " flash-missing" : ""}`}
               style={{
                 position: "relative",
-                padding: 12,
-                borderRadius: 3,
+                // The optional question box (Customize -> Question box). When it's
+                // off these vars are unset and the card keeps its old borderless,
+                // full-width look. When it's on, every card gets the SAME width and
+                // padding — heights still follow the content, so a True/False box
+                // is shorter than a four-option one.
+                padding: "var(--qbox-pad, 12px)",
+                maxWidth: "var(--qbox-width, none)",
+                border: "var(--qbox-border, none)",
+                background: "var(--qbox-fill, transparent)",
+                borderRadius: "var(--btn-radius, 3px)",
+                // Set on the card, not the question line, so the answers, hint
+                // and written-answer text all pick the font up too.
+                fontFamily: "var(--q-font, inherit)",
                 // A hint slots INTO the existing gap between choice D and the next
                 // question rather than adding to it: giving up this card's bottom
                 // padding/margin buys back exactly the room the hint takes, so the
                 // question-to-question spacing is unchanged (see the hint's marginTop).
-                paddingBottom: hints[i] ? 0 : 12,
+                paddingBottom: hints[i] ? 0 : "var(--qbox-pad, 12px)",
                 marginBottom: hints[i] ? 3 : 18
               }}
             >
@@ -3690,11 +4522,18 @@ export default function Home({
                 aria-label="Get a hint"
                 style={{
                   position: "absolute",
-                  left: -24,
+                  // Desktop has 40px of page padding to hang in. Mobile only has
+                  // 16, so -24 pushed the 18px bulb to x=-8 — half off-screen.
+                  // -11 centres it in the gap between the screen edge and the
+                  // question number (which starts at 16 padding + 12 card).
+                  left: isMobile ? -11 : -24,
                   top: 16,
                   padding: 0,
                   background: "transparent",
                   border: "none",
+                  // Icon-only, so the hint's custom colour drives the glyph
+                  // rather than a fill/border the bulb doesn't have.
+                  color: `var(--bct-hint, ${HINT_YELLOW})`,
                   lineHeight: 0,
                   cursor: hints[i] ? "default" : "pointer"
                 }}
@@ -3704,8 +4543,8 @@ export default function Home({
                   height="18"
                   viewBox="0 0 24 24"
                   // Filled once a hint has been taken, otherwise an outline.
-                  fill={hints[i]?.status === "done" ? HINT_YELLOW : "none"}
-                  stroke={HINT_YELLOW}
+                  fill={hints[i]?.status === "done" ? "currentColor" : "none"}
+                  stroke="currentColor"
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -3726,9 +4565,11 @@ export default function Home({
                 {i + 1}. {q.question}
               </p>
 
-              {/* Build the answer choices: True/False for a TF question,
-                  otherwise the four labelled options of a MC question. */}
-              {(q.type === "tf"
+              {/* Written questions: a text box + Submit Answer, then the AI's
+                  verdict and feedback. Everything else: the labelled choices. */}
+              {q.type === "written" ? (
+                renderWritten(q, i, qRound)
+              ) : (q.type === "tf"
                 ? (["True", "False"] as const).map((v) => ({ value: v as string, label: v as string }))
                 : (["A", "B", "C", "D"] as const).map((letter) => ({
                     value: letter as string,
@@ -3748,7 +4589,7 @@ export default function Home({
                       width: "fit-content",  // ...but only as wide as its content (so you click the dot/letter/text, not the whole row)
                       alignItems: "center",
                       gap: 6,
-                      marginBottom: 10,
+                      marginBottom: "var(--quiz-gap, 10px)", // quiz-style density
                       cursor: revealed ? "default" : "pointer"
                     }}
                   >
@@ -3784,7 +4625,8 @@ export default function Home({
                     <span style={{ color: "#c7c7c7" }}>{choice.label}</span>
                   </label>
                 );
-              })}
+              })
+              }
 
               {/* Hint: the same bouncing-squares animation as quiz loading,
                   then the hint in yellow Inter text under choice D. Sits
@@ -3827,7 +4669,11 @@ export default function Home({
               )}
             </div>
             {/* After the last question of each round: its Submit / grade / Rechallenge */}
-            {isLastOfRound && renderRoundControls(qRound)}
+            {/* Round controls break the column flow — they always span the
+                full width, so the Submit row sits under every column. */}
+            {isLastOfRound && (
+              <div style={{ gridColumn: "1 / -1" }}>{renderRoundControls(qRound)}</div>
+            )}
             </Fragment>
           );
         })}

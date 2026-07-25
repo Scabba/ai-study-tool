@@ -4,14 +4,17 @@ import { useState, useEffect } from "react";
 
 // 👇 Bump this version AND update the list below every time you ship an update.
 // Anyone who hasn't seen this exact version yet will get the popup once.
-const APP_VERSION = "0.6";
+const APP_VERSION = "0.7";
 
 const WHATS_NEW = [
-  "🎨 Customizable fonts and color palettes",
-  "💸 Monetization with Athenia Pro",
-  "🎙️ Record audio to turn into questions with Athenia Pro",
-  "🤖 AI Athenia Assistant",
-  "📰 Privacy Policy & Terms of Service",
+  "👾 Minigame on a brand new 'Games' page",
+  "🛠️ Reworked Quiz History page",
+  "🎨 Customizable buttons, quiz layout, and quiz folder colors",
+  "📝 Optional written answers for generated questions",
+  "📱 Mobile UI improvements to improve usability and accessibility",
+  "👤 Moderation of prompts to ensure appropriate generated content",
+  "⬆️ Improved generated question quality",
+  "🔧 Various bugfixes, UI, and performance improvements"
 ];
 
 export default function WhatsNew() {
@@ -88,7 +91,8 @@ export default function WhatsNew() {
         <button
           onClick={close}
           style={{
-            marginTop: 12,
+            display: "block",
+            margin: "12px auto 0", // center under the list
             padding: "10px 24px",
             background: "#2563eb",
             color: "white",

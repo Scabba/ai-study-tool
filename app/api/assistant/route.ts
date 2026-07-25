@@ -1,6 +1,12 @@
 import OpenAI from "openai";
 import { signedInUserId } from "@/lib/authUser";
 import { ANON_LIMITS, bumpDaily, clientIp } from "@/lib/rateLimit";
+import { isUserPro } from "@/lib/subscription";
+import {
+  FREE_DAILY_ASSISTANT,
+  FREE_DAILY_QUIZZES,
+  PRO_AUDIO_HOURS_PER_WEEK
+} from "@/lib/pricing";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -19,6 +25,11 @@ ATHENIA SITE MAP (all pages are also reachable by typing the path after the site
 - Quiz History (/history): every submitted quiz. Click a quiz's name to reopen and review it; the pencil icon renames it; the red x in a card's top-left corner deletes it (with a confirmation); the + in the top-right corner files it into a folder. Folder pages let you rename the folder and rechallenge every question missed across that folder.
 - Updates (/updates): version history of the app.
 - Support (/support): how to reach the developer — email williambilodeau55@gmail.com. The Privacy Policy and Terms of Service links are at the BOTTOM of the Support page.
+
+WHO MADE ATHENIA:
+- Athenia was built by William Bilodeau. If anyone asks who made Athenia, who the developer/creator/founder/owner is, or "what's your name" meaning the person behind the app, say William Bilodeau. Reach him at williambilodeau55@gmail.com or through the Support page.
+- If someone asks YOUR name, you're the Athenia assistant — William Bilodeau is the person who built the app, not you.
+- Beyond his name, contact email, and that he built Athenia, you know nothing personal about him. Never guess at his age, location, school, or anything else, even if asked directly or told you already said it.
 - Privacy Policy (/privacy) and Terms of Service (/terms).
 
 FEATURES:
@@ -27,13 +38,13 @@ FEATURES:
 - Rechallenge: after submitting with wrong answers, practise those concepts with 2x as many fresh questions (capped at 10), repeating until mastered.
 - Instant feedback mode (in settings): reveals right/wrong as you answer instead of at submit.
 - Stats: questions generated, quizzes completed, rechallenges, hints taken, most used generator, average grade, and more.
-- Streak: submitting any quiz completes the day. Completing 5 quizzes in one day banks a freeze that protects the streak for one missed day (the bar turns light blue when frozen). Milestones earn future Pro days: 7 days -> 3, 14 -> 3, 30 -> 4, 60 -> 5, then 5 every 30 days.
+- Streak: submitting any quiz completes the day. Completing 5 quizzes in one day banks a freeze that protects the streak for one missed day (the bar turns light blue when frozen). Milestones grant free Athenia Pro straight away, for a limited number of days: 7-day streak -> 3 days of Pro, 14 -> 3, 30 -> 4, 60 -> 5, then 5 more every 30 days. Each milestone pays once ever, and claiming another while Pro is still running adds to the end instead of replacing it. The time remaining shows in the streak's "i" popover. You must be signed in to earn it.
 - Google sign-in syncs settings, stats, and quiz history across devices.
 
 PLANS AND LIMITS:
 - Signed OUT: 3 text quizzes per day; images, audio, and YouTube require signing in; limited hints and assistant messages per day.
-- Free (signed in): 5 quizzes per day. Text, image and YouTube sources. Hints, Rechallenge, history, folders, stats and streaks all included. Audio and video quizzes are Pro-only.
-- Athenia Pro: $7.99/month or $56.99/year. Unlimited quizzes, audio and video quizzes with 15 hours of transcription per month (resets on the 1st), and priority generation. Cancel anytime from the account menu.
+- Free (signed in): ${FREE_DAILY_QUIZZES} quizzes per day and ${FREE_DAILY_ASSISTANT} assistant messages per day. Text, image and YouTube sources. Hints, Rechallenge, history, folders, stats and streaks all included. Audio and video quizzes are Pro-only.
+- Athenia Pro: $7.99/month or $56.99/year. Unlimited quizzes, unlimited assistant messages, audio and video quizzes with ${PRO_AUDIO_HOURS_PER_WEEK} hours of transcription per week (resets every Friday), and priority generation. Cancel anytime from the account menu.
 - Users must be 13 or older.
 - You do NOT know any individual's plan, usage, or how much of their allowance is left — never guess or state a number for the person you're talking to. Point them at the pricing screen or Support instead.
 
@@ -69,7 +80,9 @@ export async function POST(req: Request) {
     return new Response("No message provided.", { status: 400 });
   }
 
-  // Same gate as the other AI routes — this one spends the OpenAI key too.
+  // Same gate as the other AI routes — this one spends the OpenAI key too, and
+  // a long chat costs more than a whole quiz: the system prompt is ~1,100
+  // tokens on every message and the history grows on top of it.
   const userId = await signedInUserId();
   if (!userId) {
     const limit = await bumpDaily("assistant", clientIp(req), ANON_LIMITS.assistant);
@@ -78,6 +91,17 @@ export async function POST(req: Request) {
       const message = limit.unavailable
         ? "The assistant isn't available right now. Try again in a moment."
         : "You've used all of today's assistant messages. Sign in to keep chatting.";
+      return new Response(message, { status: limit.unavailable ? 503 : 429 });
+    }
+  } else if (!(await isUserPro(userId))) {
+    // Free accounts were previously uncapped here, so one free user could chat
+    // indefinitely at up to ~1c a message.
+    const limit = await bumpDaily("assistant", `u:${userId}`, FREE_DAILY_ASSISTANT);
+    if (!limit.allowed) {
+      // DRAFT COPY — William to reword.
+      const message = limit.unavailable
+        ? "The assistant isn't available right now. Try again in a moment."
+        : `That's all ${FREE_DAILY_ASSISTANT} assistant messages for today. Upgrade to Athenia Pro to keep chatting.`;
       return new Response(message, { status: limit.unavailable ? 503 : 429 });
     }
   }

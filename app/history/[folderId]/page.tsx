@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -8,6 +8,8 @@ import {
   renameQuiz,
   renameFolder,
   deleteQuiz,
+  deleteFolder,
+  removeQuizFromFolder,
   type QuizRecord,
   type Folder
 } from "@/lib/stats";
@@ -37,6 +39,92 @@ function gradeLabel(grade: string): string {
   return /^\d+$/.test(grade) ? `Grade ${grade}` : grade;
 }
 
+// Shrink a long quiz name so it fits the card rather than just truncating.
+function nameFontSize(name: string): number {
+  const n = name.length;
+  if (n <= 26) return 17;
+  if (n <= 36) return 15;
+  if (n <= 48) return 14;
+  return 13;
+}
+
+const TITLE_MAX = 40; // the heading's ideal size when it fits
+const TITLE_MIN = 18; // don't shrink below this; ellipsis takes over instead
+
+function TrashIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+function PencilIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+// "Remove from folder" — an open folder with a minus.
+function FolderMinusIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      <path d="M9 14h6" />
+    </svg>
+  );
+}
+
+const quizMenuItem: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  textAlign: "left",
+  padding: "10px 12px",
+  background: "transparent",
+  color: "inherit",
+  border: "none",
+  fontSize: 14,
+  cursor: "pointer"
+};
+
 export default function FolderPage() {
   const params = useParams();
   const router = useRouter();
@@ -49,6 +137,11 @@ export default function FolderPage() {
   const [editingQuiz, setEditingQuiz] = useState<string | null>(null);
   const [quizName, setQuizName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
+  const [menuId, setMenuId] = useState<string | null>(null); // which quiz's ⋯ menu is open
+  const [titleSize, setTitleSize] = useState(TITLE_MAX);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const auth = useRef<{ client: ReturnType<typeof createClient>; userId: string } | null>(null);
 
   useEffect(() => {
@@ -82,6 +175,40 @@ export default function FolderPage() {
     };
   }, [folderId]);
 
+  // Fit the folder title to the space between the back arrow and the trash.
+  // Character-count sizing can't do this: a short name still overflows on a
+  // narrow screen, which is why "Chemistry" was rendering as "Chemi…". So we
+  // measure and shrink until it fits (or hit the floor and let ellipsis take
+  // over). Re-runs on name change and on resize, since the fit is width-driven.
+  useLayoutEffect(() => {
+    function fit() {
+      const el = titleRef.current;
+      if (!el) return;
+      let size = TITLE_MAX;
+      el.style.fontSize = `${size}px`;
+      let guard = 0;
+      while (el.scrollWidth > el.clientWidth && size > TITLE_MIN && guard < 40) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+        guard += 1;
+      }
+      setTitleSize(size);
+    }
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [folder?.name, editingFolder]);
+
+  // Close the quiz ⋯ menu on an outside click.
+  useEffect(() => {
+    if (!menuId) return;
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuId(null);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuId]);
+
   async function sync() {
     const s = loadStats();
     setAllRecords(s.history);
@@ -111,6 +238,29 @@ export default function FolderPage() {
     deleteQuiz(id);
     setConfirmDeleteId(null);
     await sync();
+  }
+
+  // Take the quiz out of this folder — the quiz itself is kept, it just leaves
+  // the folder (so it drops off this page).
+  async function removeFromFolder(id: string) {
+    if (folder) removeQuizFromFolder(id, folder.id);
+    setMenuId(null);
+    await sync();
+  }
+
+  // Delete the whole folder and go back to the history list. The quizzes it
+  // held are kept — deleteFolder only un-files them.
+  async function removeFolder() {
+    if (folder) deleteFolder(folder.id);
+    setConfirmDeleteFolder(false);
+    if (auth.current) {
+      try {
+        await saveStats(auth.current.client, auth.current.userId, loadStats());
+      } catch {
+        // best-effort
+      }
+    }
+    router.push("/history");
   }
 
   // Open a saved quiz on the main page in review mode.
@@ -179,12 +329,14 @@ export default function FolderPage() {
               textAlign: "center",
               fontWeight: "bold",
               fontSize: 34,
-              maxWidth: 400,
+              // Same 56px-per-side reservation as the title button, so the
+              // rename field can't sit under the back arrow either.
+              maxWidth: "min(400px, calc(100% - 112px))",
               width: "100%",
               background: "transparent",
               color: "inherit",
               border: "1px solid #888",
-              borderRadius: 3,
+              borderRadius: "var(--btn-radius, 3px)",
               padding: "2px 8px"
             }}
           />
@@ -200,13 +352,28 @@ export default function FolderPage() {
               alignItems: "center",
               gap: 10,
               margin: "0 auto",
+              // The back arrow is absolutely positioned at left:0, so a long
+              // folder name would centre its way right up against it. Reserving
+              // 56px at each end keeps a gap no matter how long the name is.
+              maxWidth: "calc(100% - 112px)",
               background: "transparent",
               border: "none",
               color: "inherit",
               cursor: "pointer"
             }}
           >
-            <h1 style={{ fontWeight: "bold", fontSize: 40, margin: 0 }}>
+            <h1
+              ref={titleRef}
+              style={{
+                fontWeight: "bold",
+                fontSize: titleSize,
+                margin: 0,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap"
+              }}
+            >
               {folder ? folder.name : "Folder not found"}
             </h1>
             {folder && (
@@ -227,6 +394,32 @@ export default function FolderPage() {
             )}
           </button>
         )}
+
+        {/* Delete this folder — red trash top-right of the header. Mirrors the
+            back arrow on the left; the title reserves 56px each side for both. */}
+        {folder && (
+          <button
+            onClick={() => setConfirmDeleteFolder(true)}
+            aria-label="Delete folder"
+            title="Delete folder"
+            style={{
+              position: "absolute",
+              right: 0,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              color: RED,
+              cursor: "pointer"
+            }}
+          >
+            <TrashIcon size={24} />
+          </button>
+        )}
       </div>
 
       {folder && (
@@ -237,7 +430,7 @@ export default function FolderPage() {
             display: "block",
             margin: "20px auto 0",
             padding: "10px 22px",
-            borderRadius: 3,
+            borderRadius: "var(--btn-radius, 3px)",
             border: "2px solid #c79a34",
             background: "transparent",
             color: wrong.length === 0 ? "#666" : "#d9b45a",
@@ -265,97 +458,15 @@ export default function FolderPage() {
               key={r.id}
               style={{
                 position: "relative",
-                zIndex: confirmDeleteId === r.id ? 30 : undefined,
+                zIndex: menuId === r.id ? 30 : undefined,
                 display: "flex",
                 alignItems: "center",
                 gap: 14,
-                padding: "14px 34px", // room for the corner x
+                padding: "14px 34px 14px 16px", // right room for the ⋯ button
                 border: "1px solid #888",
-                borderRadius: 3
+                borderRadius: "var(--btn-radius, 3px)"
               }}
             >
-              {/* Red x flush in the very top-left corner — deletes the quiz */}
-              <div style={{ position: "absolute", top: 0, left: 0 }}>
-                <button
-                  onClick={() =>
-                    confirmDeleteId === r.id ? setConfirmDeleteId(null) : setConfirmDeleteId(r.id)
-                  }
-                  aria-label="Delete quiz"
-                  title="Delete quiz"
-                  style={{
-                    width: 26,
-                    height: 26,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: "3px 0 3px 0",
-                    borderRight: "1px solid #888",
-                    borderBottom: "1px solid #888",
-                    borderTop: "none",
-                    borderLeft: "none",
-                    background: "transparent",
-                    color: RED,
-                    fontSize: 18,
-                    lineHeight: 1,
-                    cursor: "pointer"
-                  }}
-                >
-                  ×
-                </button>
-
-                {confirmDeleteId === r.id && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: -1,
-                      left: "100%",
-                      minWidth: 180,
-                      background: "var(--background)",
-                      border: "1px solid #888",
-                      borderRadius: "0 3px 3px 3px",
-                      boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
-                      zIndex: 20,
-                      padding: 12
-                    }}
-                  >
-                    <div style={{ fontSize: 14, marginBottom: 10 }}>
-                      Delete this quiz? This can&apos;t be undone.
-                    </div>
-                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        style={{
-                          border: "1px solid #888",
-                          borderRadius: 3,
-                          background: "transparent",
-                          color: "inherit",
-                          fontSize: 13,
-                          padding: "4px 10px",
-                          cursor: "pointer"
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => removeQuiz(r.id)}
-                        style={{
-                          border: `1px solid ${RED}`,
-                          borderRadius: 3,
-                          background: "transparent",
-                          color: RED,
-                          fontSize: 13,
-                          fontWeight: "bold",
-                          padding: "4px 10px",
-                          cursor: "pointer"
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               <div style={{ minWidth: 0, flex: 1 }}>
                 {editingQuiz === r.id ? (
                   <input
@@ -376,7 +487,7 @@ export default function FolderPage() {
                       background: "transparent",
                       color: "inherit",
                       border: "1px solid #888",
-                      borderRadius: 3
+                      borderRadius: "var(--btn-radius, 3px)"
                     }}
                   />
                 ) : (
@@ -390,7 +501,7 @@ export default function FolderPage() {
                         border: "none",
                         padding: 0,
                         color: "inherit",
-                        fontSize: 17,
+                        fontSize: nameFontSize(r.name),
                         fontWeight: "bold",
                         cursor: "pointer",
                         textAlign: "left",
@@ -400,39 +511,6 @@ export default function FolderPage() {
                       }}
                     >
                       {r.name}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setQuizName(r.name);
-                        setEditingQuiz(r.id);
-                      }}
-                      title="Rename"
-                      aria-label="Rename quiz"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        background: "transparent",
-                        border: "none",
-                        padding: 0,
-                        color: "inherit",
-                        cursor: "pointer",
-                        flexShrink: 0
-                      }}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{ opacity: 0.5 }}
-                      >
-                        <path d="M12 20h9" />
-                        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                      </svg>
                     </button>
                   </span>
                 )}
@@ -444,6 +522,82 @@ export default function FolderPage() {
               <div style={{ flexShrink: 0, fontWeight: "bold", fontSize: 22, color: scoreColor(r.score) }}>
                 {r.score}%
               </div>
+
+              {/* ⋯ actions, flush in the card's top-right corner */}
+              <div
+                ref={menuId === r.id ? menuRef : undefined}
+                style={{ position: "absolute", top: 0, right: 0 }}
+              >
+                <button
+                  onClick={() => setMenuId(menuId === r.id ? null : r.id)}
+                  aria-label="Quiz actions"
+                  title="Quiz actions"
+                  style={{
+                    width: 26,
+                    height: 26,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "0 3px 0 3px",
+                    borderLeft: "1px solid #888",
+                    borderBottom: "1px solid #888",
+                    borderTop: "none",
+                    borderRight: "none",
+                    background: "transparent",
+                    color: "inherit",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    cursor: "pointer"
+                  }}
+                >
+                  ⋯
+                </button>
+
+                {menuId === r.id && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: -1, // top edge flush with the card's top edge
+                      left: "100%", // grows out to the right of the card
+                      minWidth: 190,
+                      background: "var(--background)",
+                      border: "1px solid #888",
+                      borderRadius: "0 3px 3px 3px",
+                      boxShadow: "0 6px 24px rgba(0,0,0,0.25)",
+                      zIndex: 20
+                    }}
+                  >
+                    <button
+                      onClick={() => {
+                        setQuizName(r.name);
+                        setEditingQuiz(r.id);
+                        setMenuId(null);
+                      }}
+                      style={quizMenuItem}
+                    >
+                      <PencilIcon />
+                      Rename
+                    </button>
+                    <button
+                      onClick={() => removeFromFolder(r.id)}
+                      style={{ ...quizMenuItem, borderTop: "1px solid #333" }}
+                    >
+                      <FolderMinusIcon />
+                      Remove from folder
+                    </button>
+                    <button
+                      onClick={() => {
+                        setConfirmDeleteId(r.id);
+                        setMenuId(null);
+                      }}
+                      style={{ ...quizMenuItem, borderTop: "1px solid #333", color: RED }}
+                    >
+                      <TrashIcon />
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -452,8 +606,132 @@ export default function FolderPage() {
       {confirmDeleteId && (
         <div
           onClick={() => setConfirmDeleteId(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 10 }}
-        />
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: "var(--btn-radius, 3px)",
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Delete this quiz? This can&apos;t be undone.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: "var(--btn-radius, 3px)",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => removeQuiz(confirmDeleteId)}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: "var(--btn-radius, 3px)",
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteFolder && folder && (
+        <div
+          onClick={() => setConfirmDeleteFolder(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 380,
+              width: "100%",
+              background: "var(--background)",
+              color: "var(--foreground)",
+              border: "1px solid #888",
+              borderRadius: "var(--btn-radius, 3px)",
+              padding: 24,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.25)"
+            }}
+          >
+            <div style={{ fontSize: 16, lineHeight: 1.4, marginBottom: 18 }}>
+              Are you sure you want to delete{" "}
+              <span style={{ fontWeight: "bold" }}>&ldquo;{folder.name}&rdquo;</span>?
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDeleteFolder(false)}
+                style={{
+                  border: "1px solid #888",
+                  borderRadius: "var(--btn-radius, 3px)",
+                  background: "transparent",
+                  color: "inherit",
+                  fontSize: 14,
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={removeFolder}
+                style={{
+                  border: `1px solid ${RED}`,
+                  borderRadius: "var(--btn-radius, 3px)",
+                  background: "transparent",
+                  color: RED,
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  padding: "8px 16px",
+                  cursor: "pointer"
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

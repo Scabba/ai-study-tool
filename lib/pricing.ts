@@ -7,6 +7,16 @@
 
 export type BillingCycle = "monthly" | "yearly";
 
+// Plan limits. These are the ONE source of truth: the pricing card renders them
+// and the API routes enforce them, so the card can't promise something the
+// server doesn't do. (It already drifted once — the assistant was still telling
+// users "free beta, no limits" after the Free tier shipped.)
+//
+// Safe to import from both server and client: this file pulls in nothing.
+export const FREE_DAILY_QUIZZES = 5;
+export const FREE_DAILY_ASSISTANT = 5; // messages to Athenia Assistant per day
+export const PRO_AUDIO_HOURS_PER_WEEK = 4; // resets Friday, midnight Eastern
+
 export const PRICING: Record<
   BillingCycle,
   {
@@ -41,7 +51,8 @@ export const YEARLY_SAVINGS_PERCENT = Math.round(
 // Shown as bullet points on each plan card. Draft copy — William to finalize.
 export const FREE_FEATURES = [
   "Text, image & YouTube quizzes",
-  "5 quizzes per day",
+  `${FREE_DAILY_QUIZZES} quizzes per day`,
+  `${FREE_DAILY_ASSISTANT} assistant messages per day`,
   "Hints & Rechallenge",
   "Quiz history, folders & stats",
   "Daily streak"
@@ -50,7 +61,8 @@ export const FREE_FEATURES = [
 export const PRO_FEATURES = [
   "Everything in Free",
   "Unlimited quizzes",
-  "15 hours of audio & video per month",
+  "Unlimited assistant messages",
+  `${PRO_AUDIO_HOURS_PER_WEEK} hours of audio & video per week`,
   "Priority generation",
   "Cancel anytime"
 ];
